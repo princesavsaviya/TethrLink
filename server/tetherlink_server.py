@@ -1,21 +1,13 @@
 """
 TetherLink Server - v0.9.0
-Wayland + PipeWire virtual display server with H.264 encoding.
-
-Encoding: x264enc (software) with auto-fallback to JPEG if unavailable
-Protocol:
-    Handshake : [4B width][4B height][1B codec]  (codec: 1=H264, 2=JPEG)
-    Stream    : [4B size][frame data]             (repeated per frame)
-
-Security: 3-way HMAC-SHA256 authentication (from v0.8.0)
+Wayland + PipeWire virtual display with H.264 encoding.
 
 Usage:
     ./server/run_server.sh
     ./server/run_server.sh --fps 60 --quality 90
-    ./server/run_server.sh --codec jpeg   # force JPEG
-    ./server/run_server.sh --codec h264   # force H.264
-    ./server/run_server.sh --pair         # show QR code
-    ./server/run_server.sh --reset        # reset pairing
+    ./server/run_server.sh --codec jpeg
+    ./server/run_server.sh --pair
+    ./server/run_server.sh --reset
 """
 
 import argparse
@@ -44,17 +36,19 @@ from discovery import DiscoveryBroadcaster
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="TetherLink Server")
+parser.add_argument("--width",   type=int,  default=2960)
+parser.add_argument("--height",  type=int,  default=1848)
 parser.add_argument("--fps",     type=int,  default=60)
 parser.add_argument("--quality", type=int,  default=90)
 parser.add_argument("--port",    type=int,  default=8080)
-parser.add_argument("--codec",   type=str,  default="jpeg",
+parser.add_argument("--codec",   type=str,  default="h264",
                     choices=["auto", "h264", "jpeg"])
 parser.add_argument("--pair",    action="store_true")
 parser.add_argument("--reset",   action="store_true")
 args = parser.parse_args()
 
-WIDTH          = 2960
-HEIGHT         = 1848
+WIDTH          = args.width
+HEIGHT         = args.height
 FPS            = args.fps
 JPEG_QUALITY   = args.quality
 PORT           = args.port
@@ -78,28 +72,24 @@ log = logging.getLogger("TetherLink")
 # ── Codec detection ───────────────────────────────────────────────────────────
 
 def detect_codec() -> int:
-    """Auto-detect best available codec."""
     if args.codec == "jpeg":
         log.info("Codec: JPEG (forced)")
         return CODEC_JPEG
     if args.codec == "h264":
         log.info("Codec: H.264 (forced)")
         return CODEC_H264
-
-    # Auto: try x264enc
     result = subprocess.run(
         ["gst-inspect-1.0", "x264enc"],
         capture_output=True, text=True
     )
     if "x264 H.264 Encoder" in result.stdout:
-        log.info("Codec: H.264 (x264enc available)")
+        log.info("Codec: H.264 (auto-detected)")
         return CODEC_H264
-
-    log.info("Codec: JPEG (x264enc not available)")
+    log.info("Codec: JPEG (x264enc not found)")
     return CODEC_JPEG
 
 
-# ── Secret key + auth (from v0.8.0) ──────────────────────────────────────────
+# ── Secret key + pairing ──────────────────────────────────────────────────────
 
 def load_or_create_secret() -> bytes:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -148,6 +138,8 @@ def show_qr_code(secret: bytes):
         print(f"\nPairing URL: tetherlink://pair?key={payload}\n")
 
 
+# ── HMAC handshake ────────────────────────────────────────────────────────────
+
 MAGIC_HELLO     = b"TLHELO"
 MAGIC_CHALLENGE = b"TLCHAL"
 MAGIC_RESPONSE  = b"TLRESP"
@@ -157,23 +149,25 @@ MAGIC_REJECT    = b"TLREJ_"
 _active_client_lock = threading.Lock()
 
 
-def authenticate_client(conn, addr, secret) -> tuple[bool, str, str]:
+def authenticate_client(conn, addr, secret) -> tuple[bool, str, str, int, int]:
     conn.settimeout(10.0)
     try:
-        hello = conn.recv(6 + 16 + 64)
+        hello = conn.recv(6 + 16 + 8 + 64)
     except socket.timeout:
-        return False, "", ""
+        return False, "", "", 0, 0
 
-    if len(hello) < 22 or hello[:6] != MAGIC_HELLO:
+    if len(hello) < 30 or hello[:6] != MAGIC_HELLO:
         conn.sendall(MAGIC_REJECT)
-        return False, "", ""
+        return False, "", "", 0, 0
 
-    device_id   = hello[6:22].hex()
-    device_name = hello[22:].decode("utf-8", errors="replace").strip("\x00") or f"Android-{device_id[:8]}"
+    device_id          = hello[6:22].hex()
+    screen_w, screen_h = struct.unpack(">II", hello[22:30])
+    device_name        = hello[30:].decode("utf-8", errors="replace").strip("\x00") or f"Android-{device_id[:8]}"
+    log.info("Device screen: %dx%d", screen_w, screen_h)
 
     if not _active_client_lock.acquire(blocking=False):
         conn.sendall(MAGIC_REJECT + b"BUSY")
-        return False, "", ""
+        return False, "", "", 0, 0
 
     nonce = secrets.token_bytes(16)
     conn.sendall(MAGIC_CHALLENGE + nonce)
@@ -182,12 +176,12 @@ def authenticate_client(conn, addr, secret) -> tuple[bool, str, str]:
         response = conn.recv(6 + 32)
     except socket.timeout:
         _active_client_lock.release()
-        return False, "", ""
+        return False, "", "", 0, 0
 
     if len(response) < 38 or response[:6] != MAGIC_RESPONSE:
         conn.sendall(MAGIC_REJECT)
         _active_client_lock.release()
-        return False, "", ""
+        return False, "", "", 0, 0
 
     client_hmac   = response[6:38]
     expected_hmac = hmac.new(secret, nonce, hashlib.sha256).digest()
@@ -195,14 +189,14 @@ def authenticate_client(conn, addr, secret) -> tuple[bool, str, str]:
     if not hmac.compare_digest(client_hmac, expected_hmac):
         conn.sendall(MAGIC_REJECT)
         _active_client_lock.release()
-        return False, "", ""
+        return False, "", "", 0, 0
 
     conn.settimeout(None)
     devices = load_paired_devices()
     if device_id not in devices:
         save_paired_device(device_id, device_name)
 
-    return True, device_id, device_name
+    return True, device_id, device_name, screen_w, screen_h
 
 
 # ── Mutter ScreenCast ─────────────────────────────────────────────────────────
@@ -235,8 +229,8 @@ def cleanup_orphaned_sessions(bus):
 
 class MutterVirtualDisplay:
     def __init__(self, width: int, height: int):
-        self.width  = width
-        self.height = height
+        self.width    = width
+        self.height   = height
         self._node_id = None
         self._error   = None
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
@@ -255,7 +249,7 @@ class MutterVirtualDisplay:
         session_obj = self._bus.get_object(MUTTER_BUS, self._session_path)
         session     = dbus.Interface(session_obj, MUTTER_SES_IF)
         session_obj.connect_to_signal("Closed",
-            lambda: setattr(self, "_error", "Session closed") or self._loop.quit(),
+            lambda: (setattr(self, "_error", "Session closed"), self._loop.quit()),
             dbus_interface=MUTTER_SES_IF)
         stream_path = str(session.RecordVirtual(
             dbus.Dictionary({"cursor-mode": dbus.UInt32(1)}, signature="sv")
@@ -287,12 +281,6 @@ class MutterVirtualDisplay:
 # ── GStreamer capture ─────────────────────────────────────────────────────────
 
 class PipeWireCapture:
-    """
-    Captures from PipeWire via GStreamer.
-    Codec JPEG: appsink receives raw BGR frames, Python encodes to JPEG.
-    Codec H264: appsink receives encoded H.264 NAL units, sent directly.
-    """
-
     def __init__(self, node_id: int, width: int, height: int, codec: int):
         self.width  = width
         self.height = height
@@ -306,46 +294,38 @@ class PipeWireCapture:
         self._loop = GLib.MainLoop()
 
         if codec == CODEC_H264:
-            # Scale to fit mobile decoder — preserve aspect ratio of source
-            # Tab S10 Ultra is ~16:10, use 1280x800 to avoid distortion
             aspect = width / height
             h264_w = 1280
             h264_h = int(h264_w / aspect)
-            # Ensure height is even (H.264 requirement)
             if h264_h % 2 != 0:
                 h264_h += 1
             pipeline_str = (
                 f"pipewiresrc path={node_id} always-copy=true "
-                f"! videoconvert "
-                f"! videoscale "
+                f"! videoconvert ! videoscale "
                 f"! video/x-raw,format=I420,width={h264_w},height={h264_h} "
                 f"! x264enc tune=zerolatency speed-preset=ultrafast "
                 f"  bitrate=3000 key-int-max={FPS} "
-                f"! video/x-h264,profile=baseline,stream-format=byte-stream "
                 f"! h264parse config-interval=-1 "
-                f"! appsink name=sink emit-signals=true "
-                f"max-buffers=2 drop=true sync=false"
+                f"! video/x-h264,stream-format=avc,alignment=au "
+                f"! appsink name=sink emit-signals=true max-buffers=2 drop=true sync=false"
             )
         else:
             pipeline_str = (
                 f"pipewiresrc path={node_id} always-copy=true "
                 f"! videoconvert "
                 f"! video/x-raw,format=BGR "
-                f"! appsink name=sink emit-signals=true "
-                f"max-buffers=2 drop=true sync=false"
+                f"! appsink name=sink emit-signals=true max-buffers=2 drop=true sync=false"
             )
 
-        log.info("GStreamer pipeline: %s", pipeline_str)
+        log.info("GStreamer: %s", pipeline_str)
         self._pipeline = Gst.parse_launch(pipeline_str)
         sink = self._pipeline.get_by_name("sink")
         sink.connect("new-sample", self._on_sample)
-
         ret = self._pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
-            raise RuntimeError("GStreamer pipeline failed to start")
+            raise RuntimeError("GStreamer pipeline failed")
         log.info("GStreamer pipeline playing (codec=%s)",
                  "H.264" if codec == CODEC_H264 else "JPEG")
-
         threading.Thread(target=self._loop.run, daemon=True).start()
 
     def _on_sample(self, sink) -> Gst.FlowReturn:
@@ -357,8 +337,8 @@ class PipeWireCapture:
         if ok:
             with self._lock:
                 self._frame = bytes(mi.data)
-                caps = sample.get_caps().get_structure(0)
                 try:
+                    caps = sample.get_caps().get_structure(0)
                     self._fw = caps.get_value("width")
                     self._fh = caps.get_value("height")
                 except Exception:
@@ -375,7 +355,7 @@ class PipeWireCapture:
         self._loop.quit()
 
 
-# ── Encode (JPEG only — H.264 encoded in pipeline) ───────────────────────────
+# ── JPEG encode ───────────────────────────────────────────────────────────────
 
 def to_jpeg(raw: bytes, w: int, h: int) -> bytes:
     img = Image.frombytes("RGB", (w, h), raw, "raw", "BGR")
@@ -391,13 +371,12 @@ def stream_to_client(conn: socket.socket, addr: tuple,
                      codec: int, tray: TrayState) -> None:
     log.info("Client connected: %s:%d", *addr)
 
-    ok, device_id, device_name = authenticate_client(conn, addr, secret)
+    ok, device_id, device_name, screen_w, screen_h = authenticate_client(conn, addr, secret)
     if not ok:
         conn.close()
         return
 
     try:
-        # Wait for first frame
         for _ in range(100):
             r = capture.get_frame()
             if r:
@@ -407,7 +386,6 @@ def stream_to_client(conn: socket.socket, addr: tuple,
         else:
             w, h = capture.width, capture.height
 
-        # Handshake: width + height + codec byte
         conn.sendall(MAGIC_OK + struct.pack(">IIB", w, h, codec))
         log.info("Streaming %dx%d %s @ %d FPS → %s",
                  w, h, "H.264" if codec == CODEC_H264 else "JPEG",
@@ -422,11 +400,7 @@ def stream_to_client(conn: socket.socket, addr: tuple,
             r = capture.get_frame()
             if r:
                 raw, fw, fh = r
-                if codec == CODEC_JPEG:
-                    frame_data = to_jpeg(raw, fw, fh)
-                else:
-                    frame_data = raw  # H.264 already encoded by GStreamer
-
+                frame_data = to_jpeg(raw, fw, fh) if codec == CODEC_JPEG else raw
                 conn.sendall(struct.pack(">I", len(frame_data)) + frame_data)
                 frame_count += 1
 
@@ -459,8 +433,8 @@ def run_server():
 
     codec = detect_codec()
 
-    log.info("TetherLink v0.9.0 — %s encoding",
-             "H.264" if codec == CODEC_H264 else "JPEG")
+    log.info("TetherLink v0.9.0 — %s encoding %dx%d @ %d FPS",
+             "H.264" if codec == CODEC_H264 else "JPEG", WIDTH, HEIGHT, FPS)
     log.info("Paired devices: %d", len(load_paired_devices()))
 
     display = MutterVirtualDisplay(WIDTH, HEIGHT)
@@ -471,7 +445,7 @@ def run_server():
         display.close()
         raise SystemExit(1)
 
-    log.info("Virtual display ready!")
+    log.info("Virtual display ready — drag windows onto it!")
     capture = PipeWireCapture(node_id, WIDTH, HEIGHT, codec)
     time.sleep(0.5)
 

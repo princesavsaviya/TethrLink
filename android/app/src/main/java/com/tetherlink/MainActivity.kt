@@ -324,9 +324,13 @@ class MainActivity : AppCompatActivity() {
                     throw Exception("Not paired. Tap '🔗 Pair with PC' first.")
                 }
 
-                // Step 1: Send HELLO + device_id + device_name
+                // Step 1: Send HELLO + device_id + screen_w + screen_h + device_name
                 val deviceName = android.os.Build.MODEL.toByteArray()
-                socket.getOutputStream().write(MAGIC_HELLO + DEVICE_ID + deviceName)
+                val screenW = windowManager.currentWindowMetrics.bounds.width()
+                val screenH = windowManager.currentWindowMetrics.bounds.height()
+                val screenDims = java.nio.ByteBuffer.allocate(8)
+                    .putInt(screenW).putInt(screenH).array()
+                socket.getOutputStream().write(MAGIC_HELLO + DEVICE_ID + screenDims + deviceName)
                 socket.getOutputStream().flush()
 
                 // Step 2: Receive CHALLENGE
