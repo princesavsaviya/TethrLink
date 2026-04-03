@@ -1,82 +1,125 @@
 package com.tetherlink
 
 import android.content.Context
-import android.content.SharedPreferences
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
-import android.widget.SeekBar
+import android.widget.Button
+import android.widget.ImageButton
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import com.google.android.material.slider.Slider
 
 /**
- * TetherLink Settings (v0.7.0)
- * Allows user to configure FPS target and JPEG quality.
- * Settings are persisted in SharedPreferences and read by MainActivity.
+ * TetherLink – Settings Activity (v0.9.4)
+ *
+ * Stores user preferences for FPS, JPEG quality, and codec.
+ * These are saved locally and will be synced to the server in a future version.
  */
 class SettingsActivity : AppCompatActivity() {
 
-    private lateinit var prefs: SharedPreferences
-
-    private lateinit var fpsSeek:     SeekBar
-    private lateinit var fpsLabel:    TextView
-    private lateinit var qualSeek:    SeekBar
-    private lateinit var qualLabel:   TextView
+    companion object {
+        const val PREFS_NAME      = "tetherlink_settings"
+        const val KEY_FPS         = "pref_fps"
+        const val KEY_QUALITY     = "pref_quality"
+        const val KEY_CODEC       = "pref_codec"
+        const val DEFAULT_FPS     = 60
+        const val DEFAULT_QUALITY = 85
+        const val DEFAULT_CODEC   = "jpeg"
+        const val APP_VERSION     = "v0.9.4"
+        const val GITHUB_URL      = "https://github.com/princesavsaviya/TetherLink"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
+        enableImmersiveMode()
 
-        prefs      = getSharedPreferences("tetherlink", Context.MODE_PRIVATE)
-        fpsSeek    = findViewById(R.id.fpsSeekBar)
-        fpsLabel   = findViewById(R.id.fpsLabel)
-        qualSeek   = findViewById(R.id.qualitySeekBar)
-        qualLabel  = findViewById(R.id.qualityLabel)
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        // FPS: 10–60 step 5
-        val savedFps = prefs.getInt("target_fps", 60)
-        fpsSeek.max      = 10          // (60-10)/5 = 10 steps
-        fpsSeek.progress = (savedFps - 10) / 5
-        fpsLabel.text    = "Target FPS: $savedFps"
+        val sliderFps     = findViewById<Slider>(R.id.sliderFps)
+        val tvFpsValue    = findViewById<TextView>(R.id.tvFpsValue)
+        val sliderQuality = findViewById<Slider>(R.id.sliderQuality)
+        val tvQualityValue = findViewById<TextView>(R.id.tvQualityValue)
+        val btnCodecJpeg  = findViewById<Button>(R.id.btnCodecJpeg)
+        val btnCodecH264  = findViewById<Button>(R.id.btnCodecH264)
+        val tvVersion     = findViewById<TextView>(R.id.tvVersion)
 
-        fpsSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                val fps = 10 + progress * 5
-                fpsLabel.text = "Target FPS: $fps"
-                prefs.edit().putInt("target_fps", fps).apply()
-            }
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
-        })
+        // ── Load saved values ─────────────────────────────────────────────────
+        val savedFps     = prefs.getInt(KEY_FPS, DEFAULT_FPS)
+        val savedQuality = prefs.getInt(KEY_QUALITY, DEFAULT_QUALITY)
+        val savedCodec   = prefs.getString(KEY_CODEC, DEFAULT_CODEC) ?: DEFAULT_CODEC
 
-        // Quality: 50–95 step 5
-        val savedQual = prefs.getInt("jpeg_quality", 90)
-        qualSeek.max      = 9          // (95-50)/5 = 9 steps
-        qualSeek.progress = (savedQual - 50) / 5
-        qualLabel.text    = "JPEG Quality: $savedQual  ${qualityHint(savedQual)}"
+        sliderFps.value    = savedFps.toFloat()
+        tvFpsValue.text    = savedFps.toString()
+        sliderQuality.value = savedQuality.toFloat()
+        tvQualityValue.text = savedQuality.toString()
+        tvVersion.text     = APP_VERSION
 
-        qualSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                val qual = 50 + progress * 5
-                qualLabel.text = "JPEG Quality: $qual  ${qualityHint(qual)}"
-                prefs.edit().putInt("jpeg_quality", qual).apply()
-            }
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
-        })
+        updateCodecButtons(btnCodecJpeg, btnCodecH264, savedCodec)
 
-        supportActionBar?.apply {
-            title = "Settings"
-            setDisplayHomeAsUpEnabled(true)
+        // ── Listeners ─────────────────────────────────────────────────────────
+        sliderFps.addOnChangeListener { _, value, _ ->
+            val fps = value.toInt()
+            tvFpsValue.text = fps.toString()
+            prefs.edit().putInt(KEY_FPS, fps).apply()
+        }
+
+        sliderQuality.addOnChangeListener { _, value, _ ->
+            val quality = value.toInt()
+            tvQualityValue.text = quality.toString()
+            prefs.edit().putInt(KEY_QUALITY, quality).apply()
+        }
+
+        btnCodecJpeg.setOnClickListener {
+            prefs.edit().putString(KEY_CODEC, "jpeg").apply()
+            updateCodecButtons(btnCodecJpeg, btnCodecH264, "jpeg")
+        }
+
+        btnCodecH264.setOnClickListener {
+            prefs.edit().putString(KEY_CODEC, "h264").apply()
+            updateCodecButtons(btnCodecJpeg, btnCodecH264, "h264")
+        }
+
+        findViewById<Button>(R.id.btnGithub).setOnClickListener {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_URL)))
+        }
+
+        findViewById<ImageButton>(R.id.btnBack).setOnClickListener {
+            finish()
         }
     }
 
-    private fun qualityHint(q: Int) = when {
-        q >= 85 -> "— Sharp"
-        q >= 70 -> "— Balanced"
-        else    -> "— Fast"
+    private fun updateCodecButtons(btnJpeg: Button, btnH264: Button, selected: String) {
+        btnJpeg.setBackgroundResource(
+            if (selected == "jpeg") R.drawable.bg_codec_selected
+            else R.drawable.bg_codec_unselected
+        )
+        btnH264.setBackgroundResource(
+            if (selected == "h264") R.drawable.bg_codec_selected
+            else R.drawable.bg_codec_unselected
+        )
+        btnJpeg.setTextColor(
+            resources.getColor(
+                if (selected == "jpeg") R.color.brand_light else R.color.text_hint, theme
+            )
+        )
+        btnH264.setTextColor(
+            resources.getColor(
+                if (selected == "h264") R.color.brand_light else R.color.text_hint, theme
+            )
+        )
     }
 
-    override fun onSupportNavigateUp(): Boolean {
-        finish()
-        return true
+    private fun enableImmersiveMode() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
     }
 }

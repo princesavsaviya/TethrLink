@@ -1,12 +1,404 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000">
+    android:background="@color/bg_primary">
 
-    <!-- ── Onboarding screen (first launch only) ──────────────────────────── -->
-    <ScrollView
+    <!-- ── Streaming surface ──────────────────────────────────────────────── -->
+    <SurfaceView
+        android:id="@+id/surfaceView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"/>
+
+    <!-- ── FPS pill — always visible while streaming ─────────────────────── -->
+    <LinearLayout
+        android:id="@+id/fpsPill"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="14dp"
+        android:background="@drawable/bg_fps_pill"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="6dp"
+        android:visibility="gone">
+
+        <View
+            android:id="@+id/qualityDot"
+            android:layout_width="7dp"
+            android:layout_height="7dp"
+            android:background="@drawable/dot_green"/>
+
+        <TextView
+            android:id="@+id/overlayFps"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:text="-- FPS"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp"/>
+    </LinearLayout>
+
+    <!-- ── Stream overlay — tap surfaceView to show, tap here to dismiss ─── -->
+    <FrameLayout
+        android:id="@+id/streamOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <!-- Control panel -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:layout_margin="12dp"
+            android:background="@drawable/bg_overlay_panel"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <!-- Row 1: server name + FPS -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:layout_marginBottom="10dp">
+
+                <View
+                    android:layout_width="8dp"
+                    android:layout_height="8dp"
+                    android:background="@drawable/dot_green"
+                    android:layout_marginEnd="8dp"/>
+
+                <TextView
+                    android:id="@+id/overlayServerName"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Server"
+                    android:textColor="@color/text_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"/>
+
+                <TextView
+                    android:id="@+id/overlayFpsLarge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="-- FPS"
+                    android:textColor="@color/success"
+                    android:textSize="14sp"
+                    android:textStyle="bold"/>
+            </LinearLayout>
+
+            <!-- Row 2: resolution chip + codec chip + end button -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_stat_chip"
+                    android:orientation="vertical"
+                    android:padding="8dp"
+                    android:layout_marginEnd="6dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Resolution"
+                        android:textColor="@color/text_hint"
+                        android:textSize="9sp"/>
+                    <TextView
+                        android:id="@+id/overlayResolution"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="--×--"
+                        android:textColor="@color/text_primary"
+                        android:textSize="12sp"
+                        android:textStyle="bold"/>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_stat_chip"
+                    android:orientation="vertical"
+                    android:padding="8dp"
+                    android:layout_marginEnd="6dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Codec"
+                        android:textColor="@color/text_hint"
+                        android:textSize="9sp"/>
+                    <TextView
+                        android:id="@+id/overlayCodec"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="--"
+                        android:textColor="@color/text_primary"
+                        android:textSize="12sp"
+                        android:textStyle="bold"/>
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/disconnectBtn"
+                    android:layout_width="72dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/bg_button_danger"
+                    android:stateListAnimator="@null"
+                    android:text="End"
+                    android:textColor="@color/danger_text"
+                    android:textSize="13sp"
+                    android:textStyle="bold"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Dismiss hint -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="36dp"
+            android:text="Tap to dismiss"
+            android:textColor="@color/text_hint"
+            android:textSize="11sp"/>
+    </FrameLayout>
+
+    <!-- ── Discovery screen ───────────────────────────────────────────────── -->
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/discoveryLayout"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:padding="20dp"
+        android:visibility="gone">
+
+        <!-- Title -->
+        <TextView
+            android:id="@+id/discoveryTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="TetherLink"
+            android:textColor="@color/text_primary"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent"/>
+
+        <!-- Settings button -->
+        <ImageButton
+            android:id="@+id/settingsBtn"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="@drawable/bg_icon_btn"
+            android:contentDescription="Settings"
+            android:padding="7dp"
+            android:src="@drawable/ic_settings"
+            app:layout_constraintBottom_toBottomOf="@id/discoveryTitle"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="@id/discoveryTitle"/>
+
+        <!-- USB tethering banner (hidden when tethering is active) -->
+        <LinearLayout
+            android:id="@+id/tetheringBanner"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_card_warning"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="12dp"
+            android:visibility="gone"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/discoveryTitle">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="USB tethering is off"
+                    android:textColor="@color/warning_text"
+                    android:textSize="12sp"
+                    android:textStyle="bold"/>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Required for TetherLink to work"
+                    android:textColor="@color/warning_text_dim"
+                    android:textSize="10sp"/>
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/tetheringEnableBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_button_warning"
+                android:paddingHorizontal="14dp"
+                android:stateListAnimator="@null"
+                android:text="Enable ↗"
+                android:textColor="@color/warning_text"
+                android:textSize="11sp"
+                android:textStyle="bold"/>
+        </LinearLayout>
+
+        <!-- Scanning area (fills space between banner and server card) -->
+        <LinearLayout
+            android:id="@+id/scanningArea"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:gravity="center"
+            android:orientation="vertical"
+            app:layout_constraintBottom_toTopOf="@id/usbHint"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/tetheringBanner">
+
+            <!-- Radar rings -->
+            <FrameLayout
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:layout_marginBottom="16dp">
+                <View
+                    android:layout_width="80dp"
+                    android:layout_height="80dp"
+                    android:background="@drawable/bg_radar_ring"
+                    android:layout_gravity="center"/>
+                <View
+                    android:layout_width="54dp"
+                    android:layout_height="54dp"
+                    android:background="@drawable/bg_radar_ring"
+                    android:layout_gravity="center"/>
+                <View
+                    android:layout_width="14dp"
+                    android:layout_height="14dp"
+                    android:background="@drawable/bg_radar_dot"
+                    android:layout_gravity="center"/>
+            </FrameLayout>
+
+            <ProgressBar
+                android:id="@+id/progressBar"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:indeterminate="true"
+                android:indeterminateTint="@color/brand"
+                android:visibility="visible"/>
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="Searching for server…"
+                android:textColor="@color/text_hint"
+                android:textSize="13sp"/>
+        </LinearLayout>
+
+        <!-- USB-only hint -->
+        <TextView
+            android:id="@+id/usbHint"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:gravity="center"
+            android:text="USB tethering only · WiFi interfaces ignored"
+            android:textColor="@color/text_hint"
+            android:textSize="10sp"
+            app:layout_constraintBottom_toTopOf="@id/serverCard"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"/>
+
+        <!-- Server card (shown when server is discovered) -->
+        <LinearLayout
+            android:id="@+id/serverCard"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:background="@drawable/bg_card_brand"
+            android:orientation="vertical"
+            android:padding="14dp"
+            android:visibility="gone"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent">
+
+            <!-- Server info row -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:layout_marginBottom="12dp">
+
+                <LinearLayout
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:background="@drawable/bg_icon_btn"
+                    android:gravity="center">
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_monitor"/>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+                    <TextView
+                        android:id="@+id/serverNameText"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/text_primary"
+                        android:textSize="15sp"
+                        android:textStyle="bold"/>
+                    <TextView
+                        android:id="@+id/serverInfoText"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/text_hint"
+                        android:textSize="11sp"/>
+                </LinearLayout>
+
+                <View
+                    android:layout_width="8dp"
+                    android:layout_height="8dp"
+                    android:background="@drawable/dot_green"/>
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/connectButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_button_primary"
+                android:stateListAnimator="@null"
+                android:text="Connect"
+                android:textColor="@color/text_primary"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:visibility="gone"/>
+        </LinearLayout>
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!-- ── Onboarding screen ──────────────────────────────────────────────── -->
+    <androidx.core.widget.NestedScrollView
         android:id="@+id/onboardingLayout"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -15,248 +407,115 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:gravity="center"
+            android:minHeight="600dp"
             android:orientation="vertical"
-            android:gravity="center_horizontal"
-            android:padding="48dp">
+            android:padding="28dp">
+
+            <!-- Logo -->
+            <LinearLayout
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:background="@drawable/bg_button_primary"
+                android:gravity="center"
+                android:layout_marginBottom="20dp">
+                <ImageView
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:src="@drawable/ic_monitor"/>
+            </LinearLayout>
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="👋 Welcome to TetherLink"
-                android:textColor="#FFFFFF"
+                android:text="TetherLink"
+                android:textColor="@color/text_primary"
                 android:textSize="28sp"
                 android:textStyle="bold"
-                android:layout_marginBottom="8dp" />
+                android:layout_marginBottom="8dp"/>
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Turn your tablet into a true second monitor"
-                android:textColor="#88FFFFFF"
-                android:textSize="15sp"
-                android:layout_marginBottom="40dp" />
+                android:text="Your tablet as a second monitor"
+                android:textColor="@color/text_hint"
+                android:textSize="14sp"
+                android:gravity="center"
+                android:layout_marginBottom="32dp"/>
 
-            <TextView
+            <!-- Feature cards -->
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Setup steps:"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                android:layout_marginBottom="16dp" />
+                android:background="@drawable/bg_card"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp"
+                android:layout_marginBottom="10dp">
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Ultra-low latency over USB"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp"/>
+            </LinearLayout>
 
-            <TextView
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="1️⃣  Connect your tablet to your PC via USB cable"
-                android:textColor="#CCFFFFFF"
-                android:textSize="15sp"
-                android:layout_marginBottom="12dp" />
+                android:background="@drawable/bg_card"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp"
+                android:layout_marginBottom="10dp">
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="True virtual display via Wayland"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp"/>
+            </LinearLayout>
 
-            <TextView
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="2️⃣  On Android: Settings → Connections → Mobile Hotspot → USB Tethering → ON"
-                android:textColor="#CCFFFFFF"
-                android:textSize="15sp"
-                android:layout_marginBottom="12dp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="3️⃣  On PC: run  python server/tetherlink_server.py"
-                android:textColor="#CCFFFFFF"
-                android:textSize="15sp"
-                android:fontFamily="monospace"
-                android:layout_marginBottom="12dp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="4️⃣  Come back here and tap Connect when your PC appears"
-                android:textColor="#CCFFFFFF"
-                android:textSize="15sp"
-                android:layout_marginBottom="40dp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="💡 Tip: Tap the screen while streaming to show the disconnect button"
-                android:textColor="#88FFFFFF"
-                android:textSize="13sp"
-                android:layout_marginBottom="40dp" />
+                android:background="@drawable/bg_card"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="14dp"
+                android:layout_marginBottom="32dp">
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="60 FPS JPEG and H.264 streaming"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp"/>
+            </LinearLayout>
 
             <Button
                 android:id="@+id/onboardingDoneBtn"
                 android:layout_width="match_parent"
-                android:layout_height="56dp"
-                android:text="Got it — Let's go!"
+                android:layout_height="52dp"
+                android:background="@drawable/bg_button_primary"
+                android:stateListAnimator="@null"
+                android:text="Get started"
+                android:textColor="@color/text_primary"
                 android:textSize="16sp"
-                android:backgroundTint="#2196F3" />
-
-        </LinearLayout>
-    </ScrollView>
-
-    <!-- ── Stream surface ────────────────────────────────────────────────── -->
-    <SurfaceView
-        android:id="@+id/surfaceView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:layout_gravity="center"
-        android:visibility="gone" />
-
-    <!-- ── Stream overlay (tap to show/hide) ─────────────────────────────── -->
-    <LinearLayout
-        android:id="@+id/streamOverlay"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:background="#CC000000"
-        android:padding="16dp"
-        android:visibility="gone">
-
-        <Button
-            android:id="@+id/disconnectBtn"
-            android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:text="⏹  Disconnect"
-            android:textSize="14sp"
-            android:backgroundTint="#F44336" />
-
-    </LinearLayout>
-
-    <!-- ── Discovery screen ──────────────────────────────────────────────── -->
-    <LinearLayout
-        android:id="@+id/discoveryLayout"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:gravity="center"
-        android:padding="48dp"
-        android:visibility="gone">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="TetherLink"
-            android:textColor="#FFFFFF"
-            android:textSize="32sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Second Screen over USB"
-            android:textColor="#88FFFFFF"
-            android:textSize="14sp"
-            android:layout_marginBottom="48dp" />
-
-        <ProgressBar
-            android:id="@+id/progressBar"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:indeterminate="true"
-            android:layout_marginBottom="16dp" />
-
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Searching for server…"
-            android:textColor="#AAFFFFFF"
-            android:textSize="15sp"
-            android:gravity="center"
-            android:layout_marginBottom="40dp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="#1AFFFFFF"
-            android:padding="24dp"
-            android:layout_marginBottom="24dp">
-
-            <TextView
-                android:id="@+id/serverNameText"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text=""
-                android:textColor="#FFFFFF"
-                android:textSize="18sp"
                 android:textStyle="bold"
-                android:layout_marginBottom="6dp" />
+                android:layout_marginBottom="12dp"/>
 
             <TextView
-                android:id="@+id/serverInfoText"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text=""
-                android:textColor="#88FFFFFF"
-                android:textSize="13sp" />
+                android:text="Connect USB cable before continuing"
+                android:textColor="@color/text_hint"
+                android:textSize="11sp"
+                android:gravity="center"/>
 
         </LinearLayout>
-
-        <Button
-            android:id="@+id/pairButton"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:text="🔗  Pair with PC"
-            android:textSize="14sp"
-            android:backgroundTint="#444444"
-            android:layout_marginBottom="12dp" />
-
-        <Button
-            android:id="@+id/connectButton"
-            android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:text="Connect"
-            android:textSize="16sp"
-            android:backgroundTint="#2196F3"
-            android:visibility="gone" />
-
-    </LinearLayout>
-
-    <!-- ── Settings button (top-left, discovery screen only) ───────────────── -->
-    <ImageButton
-        android:id="@+id/settingsBtn"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
-        android:layout_gravity="top|start"
-        android:layout_margin="12dp"
-        android:src="@android:drawable/ic_menu_preferences"
-        android:background="?attr/selectableItemBackgroundBorderless"
-        android:tint="#88FFFFFF"
-        android:contentDescription="Settings" />
-
-    <!-- ── FPS + quality dot (top-right, streaming only) ─────────────────── -->
-    <LinearLayout
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top|end"
-        android:layout_margin="12dp"
-        android:orientation="horizontal"
-        android:gravity="center_vertical">
-
-        <View
-            android:id="@+id/qualityDot"
-            android:layout_width="10dp"
-            android:layout_height="10dp"
-            android:layout_marginEnd="6dp"
-            android:background="@drawable/dot_green"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/overlayFps"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="-- FPS"
-            android:textColor="#AAFFFFFF"
-            android:textSize="12sp"
-            android:visibility="gone" />
-
-    </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
 
 </FrameLayout>

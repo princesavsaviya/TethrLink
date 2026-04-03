@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Backgrounds -->
+    <color name="bg_primary">#0F0F1A</color>
+    <color name="bg_secondary">#141426</color>
+    <color name="bg_card">#1A1A2E</color>
+    <color name="bg_overlay">#E6000000</color>
+
+    <!-- Brand -->
+    <color name="brand">#7C6AF7</color>
+    <color name="brand_light">#A594F9</color>
+    <color name="brand_pressed">#6455D4</color>
+    <color name="brand_tint">#1F7C6AF7</color>
+    <color name="brand_border">#597C6AF7</color>
+
+    <!-- Text -->
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="text_secondary">#99FFFFFF</color>
+    <color name="text_hint">#4DFFFFFF</color>
+
+    <!-- Borders -->
+    <color name="border_default">#1AFFFFFF</color>
+    <color name="border_medium">#33FFFFFF</color>
+
+    <!-- Warning (tethering banner) -->
+    <color name="warning_bg">#1AEAB308</color>
+    <color name="warning_border">#4DEAB308</color>
+    <color name="warning_text">#EAEAB308</color>
+    <color name="warning_text_dim">#99EAB308</color>
+    <color name="warning_btn_bg">#26EAB308</color>
+
+    <!-- Status -->
+    <color name="success">#4ADE80</color>
+    <color name="danger_bg">#7F1D1D</color>
+    <color name="danger_border">#4DEF4444</color>
+    <color name="danger_text">#FCA5A5</color>
+
+    <!-- Quality dots -->
+    <color name="dot_green">#4ADE80</color>
+    <color name="dot_yellow">#EAB308</color>
+    <color name="dot_red">#EF4444</color>
+</resources>
