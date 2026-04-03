@@ -2,7 +2,6 @@ package com.tetherlink
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.os.Bundle
 import android.view.SurfaceHolder
@@ -26,12 +25,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import android.content.Intent
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
-import android.util.Base64
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
 import android.content.SharedPreferences
+import android.util.Base64
 import org.json.JSONObject
 import java.io.DataInputStream
 import java.net.DatagramPacket
@@ -40,21 +35,14 @@ import java.net.InetSocketAddress
 import java.net.Socket
 
 /**
- * TetherLink – Main Activity (v0.6.0)
- *
- * Batch 2 UX improvements:
- *  - Connection quality indicator (green/yellow/red dot based on FPS)
- *  - Disconnect button (swipe down from top to reveal, tap to disconnect)
- *  - Onboarding screen (shown on first launch with setup instructions)
+ * TetherLink – Main Activity (v0.9.2)
  */
 class MainActivity : AppCompatActivity() {
 
     private val SERVER_PORT             = 8080
     private val MAGIC_HELLO             = "TLHELO".toByteArray()
-    private val MAGIC_CHALLENGE         = "TLCHAL".toByteArray()
-    private val MAGIC_RESPONSE          = "TLRESP".toByteArray()
     private val MAGIC_OK                = "TLOK__".toByteArray()
-    private val MAGIC_REJECT            = "TLREJ_".toByteArray()
+    private val MAGIC_BUSY              = "TLBUSY".toByteArray()
     private val DEVICE_ID: ByteArray by lazy { getOrCreateDeviceId() }
     private val DISCOVERY_PORT          = 8765
     private val AUTO_RECONNECT_DELAY_MS = 2000L
@@ -73,7 +61,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var serverNameText:   TextView
     private lateinit var serverInfoText:   TextView
     private lateinit var connectButton:    Button
-    private lateinit var pairButton:       Button
     private lateinit var onboardingLayout: View
 
     private lateinit var prefs: SharedPreferences
@@ -103,28 +90,21 @@ class MainActivity : AppCompatActivity() {
         serverNameText   = findViewById(R.id.serverNameText)
         serverInfoText   = findViewById(R.id.serverInfoText)
         connectButton    = findViewById(R.id.connectButton)
-        pairButton       = findViewById(R.id.pairButton)
         onboardingLayout = findViewById(R.id.onboardingLayout)
 
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableImmersiveMode()
 
-        // ── Disconnect button ─────────────────────────────────────────────────
         disconnectBtn.setOnClickListener {
             streamJob?.cancel()
             showDiscoveryScreen()
         }
 
-        // ── Stream overlay toggle (swipe down to show/hide disconnect button) ─
         surfaceView.setOnClickListener {
             streamOverlay.visibility =
                 if (streamOverlay.visibility == View.VISIBLE) View.GONE
                 else View.VISIBLE
-        }
-
-        pairButton.setOnClickListener {
-            startActivity(Intent(this, PairingActivity::class.java))
         }
 
         connectButton.setOnClickListener {
@@ -137,7 +117,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         // ── Onboarding ────────────────────────────────────────────────────────
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         if (!prefs.getBoolean(PREF_ONBOARDED, false)) {
             showOnboarding()
         } else {
@@ -151,6 +130,18 @@ class MainActivity : AppCompatActivity() {
             discoveryLayout.visibility  = View.VISIBLE
             startDiscoveryListener()
         }
+    }
+
+    // ── Device ID ─────────────────────────────────────────────────────────────
+
+    private fun getOrCreateDeviceId(): ByteArray {
+        val prefs = getSharedPreferences("tetherlink_device", MODE_PRIVATE)
+        val saved = prefs.getString("device_id", null)
+        if (saved != null) return Base64.decode(saved, Base64.DEFAULT)
+        val id = java.util.UUID.randomUUID().toString().replace("-", "")
+            .substring(0, 16).toByteArray()
+        prefs.edit().putString("device_id", Base64.encodeToString(id, Base64.DEFAULT)).apply()
+        return id
     }
 
     // ── Onboarding ────────────────────────────────────────────────────────────
@@ -179,43 +170,11 @@ class MainActivity : AppCompatActivity() {
 
     // ── Discovery ─────────────────────────────────────────────────────────────
 
-    /**
-     * Returns true if the given IP belongs to a USB tethering interface.
-     * Excludes WiFi (wlan) interfaces to enforce USB-only mode.
-     */
-    private fun getOrCreateDeviceId(): ByteArray {
-        val prefs = getSharedPreferences("tetherlink_device", MODE_PRIVATE)
-        val saved = prefs.getString("device_id", null)
-        if (saved != null) return Base64.decode(saved, Base64.DEFAULT)
-        val id = java.util.UUID.randomUUID().toString().replace("-", "")
-            .substring(0, 16).toByteArray()
-        prefs.edit().putString("device_id", Base64.encodeToString(id, Base64.DEFAULT)).apply()
-        return id
-    }
-
-    private fun getStoredSecret(): ByteArray? {
-        val prefs = getSharedPreferences("tetherlink_security", MODE_PRIVATE)
-        val saved = prefs.getString("paired_secret", null) ?: return null
-        return Base64.decode(saved, Base64.DEFAULT)
-    }
-
-    fun storeSecret(secret: ByteArray) {
-        val prefs = getSharedPreferences("tetherlink_security", MODE_PRIVATE)
-        prefs.edit().putString("paired_secret", Base64.encodeToString(secret, Base64.DEFAULT)).apply()
-    }
-
-    private fun computeHmac(nonce: ByteArray, secret: ByteArray): ByteArray {
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(secret, "HmacSHA256"))
-        return mac.doFinal(nonce)
-    }
-
     private fun isUsbTetherIp(ip: String): Boolean {
         return try {
             java.net.NetworkInterface.getNetworkInterfaces()
                 ?.asSequence()
                 ?.filter { iface ->
-                    // Exclude loopback and WiFi interfaces
                     !iface.isLoopback && iface.isUp &&
                             !iface.name.startsWith("wlan") &&
                             !iface.name.startsWith("p2p")
@@ -227,7 +186,6 @@ class MainActivity : AppCompatActivity() {
                         .map { it.hostAddress }
                 }
                 ?.any { addr ->
-                    // Check if IP is on same /24 subnet as this USB interface
                     val parts1 = addr?.split(".") ?: return@any false
                     val parts2 = ip.split(".")
                     parts1.size == 4 && parts2.size == 4 &&
@@ -235,7 +193,7 @@ class MainActivity : AppCompatActivity() {
                             parts1[1] == parts2[1] &&
                             parts1[2] == parts2[2]
                 } ?: false
-        } catch (_: Exception) { true } // allow if check fails
+        } catch (_: Exception) { true }
     }
 
     private fun startDiscoveryListener(autoConnectIp: String? = null) {
@@ -262,7 +220,6 @@ class MainActivity : AppCompatActivity() {
                     val name = json.optString("name", "TetherLink Server")
                     val res  = json.optString("resolution", "")
 
-                    // Only connect via USB tethering — ignore WiFi broadcasts
                     if (!isUsbTetherIp(ip)) continue
 
                     if (autoConnect != null && ip == autoConnect) {
@@ -307,10 +264,10 @@ class MainActivity : AppCompatActivity() {
         listenJob?.cancel()
         streamJob = ioScope.launch {
             withContext(Dispatchers.Main) {
-                discoveryLayout.visibility = View.GONE
+                discoveryLayout.visibility  = View.GONE
                 onboardingLayout.visibility = View.GONE
-                surfaceView.visibility     = View.VISIBLE
-                streamOverlay.visibility   = View.GONE
+                surfaceView.visibility      = View.VISIBLE
+                streamOverlay.visibility    = View.GONE
             }
 
             try {
@@ -318,61 +275,38 @@ class MainActivity : AppCompatActivity() {
                 socket.connect(InetSocketAddress(ip, SERVER_PORT), 5000)
                 val input = DataInputStream(socket.getInputStream())
 
-                // ── 3-way HMAC handshake ─────────────────────────────
-                val secret = getStoredSecret()
-                if (secret == null) {
-                    throw Exception("Not paired. Tap '🔗 Pair with PC' first.")
-                }
-
-                // Step 1: Send HELLO + device_id + screen_w + screen_h + device_name
-                val deviceName = android.os.Build.MODEL.toByteArray()
-                val screenW = windowManager.currentWindowMetrics.bounds.width()
-                val screenH = windowManager.currentWindowMetrics.bounds.height()
-                val screenDims = java.nio.ByteBuffer.allocate(8)
+                // ── Handshake ─────────────────────────────────────────────────
+                val deviceName  = android.os.Build.MODEL.toByteArray()
+                val screenW     = windowManager.currentWindowMetrics.bounds.width()
+                val screenH     = windowManager.currentWindowMetrics.bounds.height()
+                val screenDims  = java.nio.ByteBuffer.allocate(8)
                     .putInt(screenW).putInt(screenH).array()
+
                 socket.getOutputStream().write(MAGIC_HELLO + DEVICE_ID + screenDims + deviceName)
                 socket.getOutputStream().flush()
 
-                // Step 2: Receive CHALLENGE
-                val challengeHeader = ByteArray(6)
-                input.readFully(challengeHeader)
-                if (!challengeHeader.contentEquals(MAGIC_CHALLENGE)) {
-                    throw Exception("Unexpected response from server")
-                }
-                val nonce = ByteArray(16)
-                input.readFully(nonce)
+                val responseHeader = ByteArray(6)
+                input.readFully(responseHeader)
 
-                // Step 3: Send HMAC response
-                val hmacBytes = computeHmac(nonce, secret)
-                socket.getOutputStream().write(MAGIC_RESPONSE + hmacBytes)
-                socket.getOutputStream().flush()
-
-                // Step 4: Receive OK + resolution + codec
-                val resultHeader = ByteArray(6)
-                input.readFully(resultHeader)
-                if (resultHeader.contentEquals(MAGIC_REJECT)) {
-                    throw Exception("Authentication failed — wrong key or server busy")
-                }
-                if (!resultHeader.contentEquals(MAGIC_OK)) {
-                    throw Exception("Unexpected server response")
+                when {
+                    responseHeader.contentEquals(MAGIC_BUSY) ->
+                        throw Exception("Server is busy — another device is connected")
+                    !responseHeader.contentEquals(MAGIC_OK) ->
+                        throw Exception("Unexpected response from server")
                 }
                 // ─────────────────────────────────────────────────────────────
 
-                val streamW = input.readInt()
-                val streamH = input.readInt()
-                val codecId = input.read()  // 1=H264, 2=JPEG
+                val streamW   = input.readInt()
+                val streamH   = input.readInt()
+                val codecId   = input.read()  // 1=H264, 2=JPEG
                 val codecName = if (codecId == 1) "H.264" else "JPEG"
                 showToast("Connected to $discoveredName — ${streamW}×${streamH} $codecName")
 
-                // Keep-alive: detect silent disconnects within 3s
                 socket.soTimeout = 3000
 
-                // Use SurfaceHolder.Callback to wait for the surface to be
-                // created/ready AFTER surfaceView becomes visible
                 val surfaceReady = CompletableDeferred<android.view.Surface>()
                 withContext(Dispatchers.Main) {
                     if (surfaceView.holder.surface.isValid) {
-                        // Surface already valid (e.g. reconnect)
                         surfaceReady.complete(surfaceView.holder.surface)
                     } else {
                         surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
@@ -389,12 +323,10 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Wait up to 5 seconds for surface
                 val surface = withContext(Dispatchers.IO) {
                     kotlinx.coroutines.withTimeout(5000) { surfaceReady.await() }
                 }
 
-                // Initialize decoder based on codec
                 val latestBitmap = java.util.concurrent.atomic.AtomicReference<Bitmap?>()
                 val decoder = StreamDecoder(
                     surface  = surface,
@@ -404,9 +336,6 @@ class MainActivity : AppCompatActivity() {
                     onBitmap = { bmp -> latestBitmap.set(bmp) }
                 )
 
-
-
-                // Render coroutine for JPEG mode
                 val renderJob = kotlinx.coroutines.GlobalScope.launch(Dispatchers.Main) {
                     while (streamJob?.isActive == true) {
                         val bmp = latestBitmap.getAndSet(null)
@@ -462,7 +391,6 @@ class MainActivity : AppCompatActivity() {
             serverInfoText.text         = ""
             discoveredIp                = null
         }
-        // Restart discovery so Connect button reappears when server is found
         startDiscoveryListener()
     }
 
@@ -493,7 +421,6 @@ class MainActivity : AppCompatActivity() {
             fpsLastTime = now
             withContext(Dispatchers.Main) {
                 overlayFps.text = "$fps FPS"
-                // ── Connection quality dot ─────────────────────────────────
                 qualityDot.visibility = View.VISIBLE
                 qualityDot.setBackgroundResource(
                     when {

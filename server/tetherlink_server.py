@@ -1,29 +1,18 @@
 """
-TetherLink Server - v0.9.2
-Wayland + PipeWire virtual display, JPEG streaming.
-
-Resolution note:
-    Virtual display is created at --width x --height (default 1920x1080).
-    This should match your laptop's native resolution so GNOME renders UI
-    at the correct density. The GStreamer caps filter forces PipeWire to
-    negotiate this exact resolution instead of defaulting to 1280x720.
+TetherLink Server - v0.9.3
+Wayland + PipeWire virtual display with H.264 / JPEG encoding.
 
 Usage:
     ./server/run_server.sh
     ./server/run_server.sh --fps 60 --quality 90
-    ./server/run_server.sh --width 1920 --height 1080
     ./server/run_server.sh --codec jpeg
-    ./server/run_server.sh --pair
-    ./server/run_server.sh --reset
+    ./server/run_server.sh --codec h264
+    ./server/run_server.sh --width 1920 --height 1080
 """
 
 import argparse
-import hashlib
-import hmac
-import json
 import logging
 import os
-import secrets
 import socket
 import struct
 import subprocess
@@ -43,15 +32,13 @@ from discovery import DiscoveryBroadcaster
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="TetherLink Server")
-parser.add_argument("--width",   type=int,  default=1920)
-parser.add_argument("--height",  type=int,  default=1080)
-parser.add_argument("--fps",     type=int,  default=60)
-parser.add_argument("--quality", type=int,  default=90)
-parser.add_argument("--port",    type=int,  default=8080)
-parser.add_argument("--codec",   type=str,  default="jpeg",
+parser.add_argument("--width",   type=int, default=1920)
+parser.add_argument("--height",  type=int, default=1080)
+parser.add_argument("--fps",     type=int, default=60)
+parser.add_argument("--quality", type=int, default=90)
+parser.add_argument("--port",    type=int, default=8080)
+parser.add_argument("--codec",   type=str, default="jpeg",
                     choices=["auto", "h264", "jpeg"])
-parser.add_argument("--pair",    action="store_true")
-parser.add_argument("--reset",   action="store_true")
 args = parser.parse_args()
 
 WIDTH          = args.width
@@ -60,9 +47,6 @@ FPS            = args.fps
 JPEG_QUALITY   = args.quality
 PORT           = args.port
 FRAME_INTERVAL = 1.0 / FPS
-CONFIG_DIR     = Path.home() / ".config" / "tetherlink"
-SECRET_FILE    = CONFIG_DIR / "secret.key"
-DEVICES_FILE   = CONFIG_DIR / "paired_devices.json"
 
 CODEC_H264 = 1
 CODEC_JPEG = 2
@@ -96,114 +80,45 @@ def detect_codec() -> int:
     return CODEC_JPEG
 
 
-# ── Secret key + pairing ──────────────────────────────────────────────────────
+# ── Handshake ─────────────────────────────────────────────────────────────────
 
-def load_or_create_secret() -> bytes:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    if args.reset and SECRET_FILE.exists():
-        SECRET_FILE.unlink()
-        DEVICES_FILE.unlink(missing_ok=True)
-        log.info("Secret reset — all paired devices removed")
-    if SECRET_FILE.exists():
-        return SECRET_FILE.read_bytes()
-    secret = secrets.token_bytes(32)
-    SECRET_FILE.write_bytes(secret)
-    SECRET_FILE.chmod(0o600)
-    log.info("New secret key generated")
-    return secret
-
-
-def load_paired_devices() -> dict:
-    if DEVICES_FILE.exists():
-        return json.loads(DEVICES_FILE.read_text())
-    return {}
-
-
-def save_paired_device(device_id: str, name: str):
-    devices = load_paired_devices()
-    devices[device_id] = {"name": name, "paired_at": time.time()}
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    DEVICES_FILE.write_text(json.dumps(devices, indent=2))
-    log.info("Paired device: %s (%s)", name, device_id)
-
-
-def show_qr_code(secret: bytes):
-    try:
-        import qrcode, base64
-        payload = base64.b64encode(secret).decode()
-        qr = qrcode.QRCode(border=1)
-        qr.add_data(f"tetherlink://pair?key={payload}")
-        qr.make(fit=True)
-        print("\n" + "="*50)
-        print("  TetherLink — Scan to pair your Android tablet")
-        print("="*50)
-        qr.print_ascii(invert=True)
-        print("="*50 + "\n")
-    except ImportError:
-        import base64
-        payload = base64.b64encode(secret).decode()
-        print(f"\nPairing URL: tetherlink://pair?key={payload}\n")
-
-
-# ── HMAC handshake ────────────────────────────────────────────────────────────
-
-MAGIC_HELLO     = b"TLHELO"
-MAGIC_CHALLENGE = b"TLCHAL"
-MAGIC_RESPONSE  = b"TLRESP"
-MAGIC_OK        = b"TLOK__"
-MAGIC_REJECT    = b"TLREJ_"
+MAGIC_HELLO = b"TLHELO"
+MAGIC_OK    = b"TLOK__"
+MAGIC_BUSY  = b"TLBUSY"
 
 _active_client_lock = threading.Lock()
 
 
-def authenticate_client(conn, addr, secret) -> tuple[bool, str, str, int, int]:
+def accept_client(conn, addr) -> tuple[bool, str, int, int]:
+    """
+    Simple handshake — reads device info, enforces one-connection limit.
+    Returns (accepted, device_name, screen_w, screen_h).
+    """
     conn.settimeout(10.0)
     try:
         hello = conn.recv(6 + 16 + 8 + 64)
     except socket.timeout:
-        return False, "", "", 0, 0
+        return False, "", 0, 0
 
     if len(hello) < 30 or hello[:6] != MAGIC_HELLO:
-        conn.sendall(MAGIC_REJECT)
-        return False, "", "", 0, 0
+        conn.close()
+        return False, "", 0, 0
 
     device_id          = hello[6:22].hex()
     screen_w, screen_h = struct.unpack(">II", hello[22:30])
-    device_name        = hello[30:].decode("utf-8", errors="replace").strip("\x00") or f"Android-{device_id[:8]}"
-    log.info("Device screen: %dx%d", screen_w, screen_h)
+    device_name        = (
+        hello[30:].decode("utf-8", errors="replace").strip("\x00")[:64]
+        or f"Android-{device_id[:8]}"
+    )
+    log.info("Incoming connection: %s — screen %dx%d", device_name, screen_w, screen_h)
 
     if not _active_client_lock.acquire(blocking=False):
-        conn.sendall(MAGIC_REJECT + b"BUSY")
-        return False, "", "", 0, 0
-
-    nonce = secrets.token_bytes(16)
-    conn.sendall(MAGIC_CHALLENGE + nonce)
-
-    try:
-        response = conn.recv(6 + 32)
-    except socket.timeout:
-        _active_client_lock.release()
-        return False, "", "", 0, 0
-
-    if len(response) < 38 or response[:6] != MAGIC_RESPONSE:
-        conn.sendall(MAGIC_REJECT)
-        _active_client_lock.release()
-        return False, "", "", 0, 0
-
-    client_hmac   = response[6:38]
-    expected_hmac = hmac.new(secret, nonce, hashlib.sha256).digest()
-
-    if not hmac.compare_digest(client_hmac, expected_hmac):
-        conn.sendall(MAGIC_REJECT)
-        _active_client_lock.release()
-        return False, "", "", 0, 0
+        conn.sendall(MAGIC_BUSY)
+        conn.close()
+        return False, "", 0, 0
 
     conn.settimeout(None)
-    devices = load_paired_devices()
-    if device_id not in devices:
-        save_paired_device(device_id, device_name)
-
-    return True, device_id, device_name, screen_w, screen_h
+    return True, device_name, screen_w, screen_h
 
 
 # ── Mutter ScreenCast ─────────────────────────────────────────────────────────
@@ -378,13 +293,12 @@ def to_jpeg(raw: bytes, w: int, h: int) -> bytes:
 # ── TCP streaming ─────────────────────────────────────────────────────────────
 
 def stream_to_client(conn: socket.socket, addr: tuple,
-                     capture: PipeWireCapture, secret: bytes,
-                     codec: int, tray: TrayState) -> None:
+                     capture: PipeWireCapture, codec: int,
+                     tray: TrayState) -> None:
     log.info("Client connected: %s:%d", *addr)
 
-    ok, device_id, device_name, screen_w, screen_h = authenticate_client(conn, addr, secret)
-    if not ok:
-        conn.close()
+    accepted, device_name, screen_w, screen_h = accept_client(conn, addr)
+    if not accepted:
         return
 
     try:
@@ -438,15 +352,10 @@ def stream_to_client(conn: socket.socket, addr: tuple,
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def run_server():
-    secret = load_or_create_secret()
-    if args.pair or not DEVICES_FILE.exists():
-        show_qr_code(secret)
-
     codec = detect_codec()
 
     log.info("TetherLink v0.9.2 — %s encoding %dx%d @ %d FPS",
              "H.264" if codec == CODEC_H264 else "JPEG", WIDTH, HEIGHT, FPS)
-    log.info("Paired devices: %d", len(load_paired_devices()))
 
     display = MutterVirtualDisplay(WIDTH, HEIGHT)
     try:
@@ -460,7 +369,7 @@ def run_server():
     capture = PipeWireCapture(node_id, WIDTH, HEIGHT, codec)
     time.sleep(0.5)
 
-    tray_state     = TrayState()
+    tray_state = TrayState()
     tray_state.update(resolution=f"{WIDTH}×{HEIGHT}")
     shutdown_event = threading.Event()
 
@@ -482,7 +391,7 @@ def run_server():
                     conn, addr = srv.accept()
                     threading.Thread(
                         target=stream_to_client,
-                        args=(conn, addr, capture, secret, codec, tray_state),
+                        args=(conn, addr, capture, codec, tray_state),
                         daemon=True,
                     ).start()
                 except socket.timeout:
