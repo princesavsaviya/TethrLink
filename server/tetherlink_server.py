@@ -1,5 +1,5 @@
 """
-TetherLink Server - v0.9.3
+TetherLink Server - v0.9.5
 Wayland + PipeWire virtual display with H.264 / JPEG encoding.
 
 Usage:
@@ -8,6 +8,7 @@ Usage:
     ./server/run_server.sh --codec jpeg
     ./server/run_server.sh --codec h264
     ./server/run_server.sh --width 1920 --height 1080
+    ./server/run_server.sh --port 51137
 """
 
 import argparse
@@ -30,23 +31,43 @@ from PIL import Image
 from tray import TrayState, start_tray
 from discovery import DiscoveryBroadcaster
 
+# ── Version ───────────────────────────────────────────────────────────────────
+VERSION = "0.9.5"
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="TetherLink Server")
-parser.add_argument("--width",   type=int, default=1920)
-parser.add_argument("--height",  type=int, default=1080)
-parser.add_argument("--fps",     type=int, default=60)
-parser.add_argument("--quality", type=int, default=90)
-parser.add_argument("--port",    type=int, default=8080)
-parser.add_argument("--codec",   type=str, default="jpeg",
+parser.add_argument("--width",      type=int, default=1920)
+parser.add_argument("--height",     type=int, default=1080)
+parser.add_argument("--fps",        type=int, default=60)
+parser.add_argument("--quality",    type=int, default=90)
+parser.add_argument("--port",       type=int, default=51137,
+                    help="Stream port (default 51137, auto-scans up if taken)")
+parser.add_argument("--codec",      type=str, default="jpeg",
                     choices=["auto", "h264", "jpeg"])
+parser.add_argument("--bitrate",    type=int, default=3000,
+                    help="H.264 bitrate in kbps (default 3000)")
+parser.add_argument("--h264-width", type=int, default=1280,
+                    help="H.264 encode width in pixels (default 1280)")
 args = parser.parse_args()
 
 WIDTH          = args.width
 HEIGHT         = args.height
 FPS            = args.fps
 JPEG_QUALITY   = args.quality
-PORT           = args.port
 FRAME_INTERVAL = 1.0 / FPS
+H264_BITRATE   = args.bitrate
+H264_WIDTH     = args.h264_width
+
+# ── Timing constants ──────────────────────────────────────────────────────────
+HANDSHAKE_TIMEOUT_S     = 10.0
+FRAME_WAIT_ATTEMPTS     = 100       # × FRAME_WAIT_SLEEP_S = 5s max wait
+FRAME_WAIT_SLEEP_S      = 0.05
+CAPTURE_INIT_SLEEP_S    = 0.5       # settle time after GStreamer starts
+MUTTER_SETUP_TIMEOUT_MS = 10_000
+
+# ── Network constants ─────────────────────────────────────────────────────────
+PORT_SCAN_RANGE     = 10            # try default .. default+9
+APPSINK_MAX_BUFFERS = 2
 
 CODEC_H264 = 1
 CODEC_JPEG = 2
@@ -58,6 +79,40 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("TetherLink")
+
+
+# ── Port binding ──────────────────────────────────────────────────────────────
+
+def bind_server_socket(preferred_port: int) -> tuple[socket.socket, int]:
+    """
+    Try to bind to preferred_port. If taken, scan upward by PORT_SCAN_RANGE.
+    Returns (bound_socket, actual_port).
+    Raises OSError if no port in range is available.
+    """
+    for port in range(preferred_port, preferred_port + PORT_SCAN_RANGE):
+        try:
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("0.0.0.0", port))
+            srv.listen(5)
+            srv.settimeout(1.0)
+            if port != preferred_port:
+                log.warning(
+                    "Port %d was taken — bound to %d instead", preferred_port, port
+                )
+            else:
+                log.info("Server ready on port %d", port)
+            return srv, port
+        except OSError:
+            log.debug("Port %d unavailable, trying next…", port)
+            try:
+                srv.close()
+            except Exception:
+                pass
+    raise OSError(
+        f"No available port in range {preferred_port}–"
+        f"{preferred_port + PORT_SCAN_RANGE - 1}"
+    )
 
 
 # ── Codec detection ───────────────────────────────────────────────────────────
@@ -94,7 +149,7 @@ def accept_client(conn, addr) -> tuple[bool, str, int, int]:
     Simple handshake — reads device info, enforces one-connection limit.
     Returns (accepted, device_name, screen_w, screen_h).
     """
-    conn.settimeout(10.0)
+    conn.settimeout(HANDSHAKE_TIMEOUT_S)
     try:
         hello = conn.recv(6 + 16 + 8 + 64)
     except socket.timeout:
@@ -183,7 +238,7 @@ class MutterVirtualDisplay:
                              self._loop.quit()),
             dbus_interface=MUTTER_STR_IF)
         session.Start()
-        GLib.timeout_add(10_000, lambda: (
+        GLib.timeout_add(MUTTER_SETUP_TIMEOUT_MS, lambda: (
             setattr(self, "_error", "Timeout"), self._loop.quit()
         ))
         self._loop.run()
@@ -217,19 +272,19 @@ class PipeWireCapture:
 
         if codec == CODEC_H264:
             aspect = width / height
-            h264_w = 1280
-            h264_h = int(h264_w / aspect)
+            h264_h = int(H264_WIDTH / aspect)
             if h264_h % 2 != 0:
                 h264_h += 1
             pipeline_str = (
                 f"pipewiresrc path={node_id} always-copy=true "
                 f"! videoconvert ! videoscale "
-                f"! video/x-raw,format=I420,width={h264_w},height={h264_h} "
+                f"! video/x-raw,format=I420,width={H264_WIDTH},height={h264_h} "
                 f"! x264enc tune=zerolatency speed-preset=ultrafast "
-                f"  bitrate=3000 key-int-max={FPS} "
+                f"  bitrate={H264_BITRATE} key-int-max={FPS} "
                 f"! h264parse config-interval=-1 "
                 f"! video/x-h264,stream-format=avc,alignment=au "
-                f"! appsink name=sink emit-signals=true max-buffers=2 drop=true sync=false"
+                f"! appsink name=sink emit-signals=true "
+                f"  max-buffers={APPSINK_MAX_BUFFERS} drop=true sync=false"
             )
         else:
             pipeline_str = (
@@ -240,7 +295,8 @@ class PipeWireCapture:
                 f"! video/x-raw,width={self.width},height={self.height},max-framerate={FPS}/1 "
                 f"! videoconvert "
                 f"! video/x-raw,format=BGR "
-                f"! appsink name=sink emit-signals=true max-buffers=2 drop=true sync=false"
+                f"! appsink name=sink emit-signals=true "
+                f"  max-buffers={APPSINK_MAX_BUFFERS} drop=true sync=false"
             )
 
         log.info("GStreamer: %s", pipeline_str)
@@ -302,12 +358,12 @@ def stream_to_client(conn: socket.socket, addr: tuple,
         return
 
     try:
-        for _ in range(100):
+        for _ in range(FRAME_WAIT_ATTEMPTS):
             r = capture.get_frame()
             if r:
                 _, w, h = r
                 break
-            time.sleep(0.05)
+            time.sleep(FRAME_WAIT_SLEEP_S)
         else:
             w, h = capture.width, capture.height
 
@@ -354,8 +410,9 @@ def stream_to_client(conn: socket.socket, addr: tuple,
 def run_server():
     codec = detect_codec()
 
-    log.info("TetherLink v0.9.2 — %s encoding %dx%d @ %d FPS",
-             "H.264" if codec == CODEC_H264 else "JPEG", WIDTH, HEIGHT, FPS)
+    log.info("TetherLink v%s — %s encoding %dx%d @ %d FPS",
+             VERSION, "H.264" if codec == CODEC_H264 else "JPEG",
+             WIDTH, HEIGHT, FPS)
 
     display = MutterVirtualDisplay(WIDTH, HEIGHT)
     try:
@@ -367,44 +424,48 @@ def run_server():
 
     log.info("Virtual display ready — drag windows onto it!")
     capture = PipeWireCapture(node_id, WIDTH, HEIGHT, codec)
-    time.sleep(0.5)
+    time.sleep(CAPTURE_INIT_SLEEP_S)
 
     tray_state = TrayState()
     tray_state.update(resolution=f"{WIDTH}×{HEIGHT}")
     shutdown_event = threading.Event()
 
-    broadcaster = DiscoveryBroadcaster(PORT, WIDTH, HEIGHT)
+    # Bind socket first — actual_port may differ from args.port if taken
+    try:
+        srv, actual_port = bind_server_socket(args.port)
+    except OSError as e:
+        log.error("Could not bind stream port: %s", e)
+        capture.close()
+        display.close()
+        raise SystemExit(1)
+
+    # Pass actual_port to broadcaster so discovery reflects the real port
+    broadcaster = DiscoveryBroadcaster(actual_port, WIDTH, HEIGHT)
     broadcaster.start()
 
     tray = start_tray(tray_state, on_quit=lambda: shutdown_event.set())
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(("0.0.0.0", PORT))
-        srv.listen(5)
-        srv.settimeout(1.0)
-        log.info("Server ready on port %d", PORT)
-
-        try:
-            while not shutdown_event.is_set():
-                try:
-                    conn, addr = srv.accept()
-                    threading.Thread(
-                        target=stream_to_client,
-                        args=(conn, addr, capture, codec, tray_state),
-                        daemon=True,
-                    ).start()
-                except socket.timeout:
-                    continue
-        except KeyboardInterrupt:
-            log.info("Shutting down...")
-        finally:
-            tray.quit()
-            broadcaster.stop()
-            capture.close()
-            display.close()
-            import signal
-            os.kill(os.getpid(), signal.SIGTERM)
+    try:
+        while not shutdown_event.is_set():
+            try:
+                conn, addr = srv.accept()
+                threading.Thread(
+                    target=stream_to_client,
+                    args=(conn, addr, capture, codec, tray_state),
+                    daemon=True,
+                ).start()
+            except socket.timeout:
+                continue
+    except KeyboardInterrupt:
+        log.info("Shutting down...")
+    finally:
+        tray.quit()
+        broadcaster.stop()
+        srv.close()
+        capture.close()
+        display.close()
+        import signal
+        os.kill(os.getpid(), signal.SIGTERM)
 
 
 if __name__ == "__main__":

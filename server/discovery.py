@@ -6,11 +6,10 @@ Android app listens for these broadcasts to find the server automatically.
 Packet format (JSON):
   {
     "app":        "TetherLink",
-    "name":       "Prince's OMEN",   ← hostname
-    "ip":         "10.90.14.99",
-    "port":       8080,
-    "resolution": "2960x1848",
-    "version":    "1.0"
+    "name":       "Prince's OMEN",
+    "port":       51137,
+    "resolution": "1920x1080",
+    "version":    "0.9.5"
   }
 """
 
@@ -19,36 +18,17 @@ import logging
 import socket
 import threading
 import time
-import platform
 
 log = logging.getLogger("TetherLink.Discovery")
 
-BROADCAST_PORT    = 8765
-BROADCAST_INTERVAL = 2.0  # seconds
+# ── Constants ─────────────────────────────────────────────────────────────────
+BROADCAST_PORT     = 8765
+BROADCAST_INTERVAL = 2.0    # seconds between announcements
+BROADCAST_ADDRESS  = "255.255.255.255"
+SOCKET_TIMEOUT_S   = 1.0    # receive timeout so stop() is responsive
 
-
-def get_local_ips() -> list[str]:
-    """Get all non-loopback IPv4 addresses on this machine."""
-    ips = []
-    try:
-        import netifaces
-        for iface in netifaces.interfaces():
-            addrs = netifaces.ifaddresses(iface)
-            if netifaces.AF_INET in addrs:
-                for a in addrs[netifaces.AF_INET]:
-                    ip = a.get("addr", "")
-                    if ip and not ip.startswith("127."):
-                        ips.append(ip)
-    except ImportError:
-        # Fallback without netifaces
-        try:
-            hostname = socket.gethostname()
-            ip = socket.gethostbyname(hostname)
-            if not ip.startswith("127."):
-                ips.append(ip)
-        except Exception:
-            pass
-    return ips
+VERSION = "0.9.5"
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class DiscoveryBroadcaster:
@@ -70,7 +50,7 @@ class DiscoveryBroadcaster:
             "name":       self._name,
             "port":       self._port,
             "resolution": self._resolution,
-            "version":    "1.0",
+            "version":    VERSION,
         }
         return json.dumps(payload).encode("utf-8")
 
@@ -78,7 +58,7 @@ class DiscoveryBroadcaster:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.settimeout(1.0)
+        sock.settimeout(SOCKET_TIMEOUT_S)
 
         log.info("Broadcasting presence on UDP port %d every %.0fs",
                  BROADCAST_PORT, BROADCAST_INTERVAL)
@@ -86,8 +66,7 @@ class DiscoveryBroadcaster:
         while self._running:
             packet = self._make_packet()
             try:
-                # Broadcast on all interfaces
-                sock.sendto(packet, ("255.255.255.255", BROADCAST_PORT))
+                sock.sendto(packet, (BROADCAST_ADDRESS, BROADCAST_PORT))
             except Exception as e:
                 log.debug("Broadcast error: %s", e)
             time.sleep(BROADCAST_INTERVAL)
@@ -100,7 +79,8 @@ class DiscoveryBroadcaster:
             target=self._broadcast_loop, daemon=True
         )
         self._thread.start()
-        log.info("Discovery broadcaster started — device name: %s", self._name)
+        log.info("Discovery broadcaster started — device: %s, port: %d",
+                 self._name, self._port)
 
     def stop(self):
         self._running = False
