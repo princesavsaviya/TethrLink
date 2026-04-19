@@ -7,6 +7,18 @@ material                   = "1.11.0"
 constraintlayout           = "2.1.4"
 kotlinx-coroutines-android = "1.7.3"
 zxing-android             = "4.3.0"
+ui = "1.4.0"
+ui-graphics = "1.4.0"
+ui-tooling-preview = "1.4.0"
+material3 = "1.0.1"
+ui-tooling = "1.4.0"
+activity-compose = "1.8.2"
+ui-version = "1.10.6"
+ui-graphics-version = "1.10.6"
+ui-tooling-preview-version = "1.10.6"
+material3-version = "1.4.0"
+activity-compose-version = "1.13.0"
+ui-tooling-version = "1.10.6"
 
 [libraries]
 androidx-core-ktx          = { group = "androidx.core",            name = "core-ktx",                   version.ref = "androidx-core-ktx" }
@@ -15,6 +27,18 @@ material                   = { group = "com.google.android.material", name = "ma
 androidx-constraintlayout  = { group = "androidx.constraintlayout", name = "constraintlayout",          version.ref = "constraintlayout" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx",   name = "kotlinx-coroutines-android", version.ref = "kotlinx-coroutines-android" }
 zxing-android             = { group = "com.journeyapps",            name = "zxing-android-embedded",     version.ref = "zxing-android" }
+androidx-ui = { group = "androidx.compose.ui", name = "ui", version.ref = "ui" }
+androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics", version.ref = "ui-graphics" }
+androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview", version.ref = "ui-tooling-preview" }
+androidx-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
+androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling", version.ref = "ui-tooling" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activity-compose" }
+ui = { group = "androidx.compose.ui", name = "ui", version.ref = "ui-version" }
+ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics", version.ref = "ui-graphics-version" }
+ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview", version.ref = "ui-tooling-preview-version" }
+material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3-version" }
+activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activity-compose-version" }
+ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling", version.ref = "ui-tooling-version" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

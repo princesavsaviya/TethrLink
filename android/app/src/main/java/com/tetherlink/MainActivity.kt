@@ -26,6 +26,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import android.util.Base64
 import org.json.JSONObject
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.runtime.mutableStateOf
+import com.tetherlink.ui.NoUSBScreen
+import com.tetherlink.ui.ScanningScreen
+import com.tetherlink.ui.ServerFoundScreen
+import com.tetherlink.ui.TetherOffScreen
 import java.io.DataInputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -61,21 +67,8 @@ class MainActivity : AppCompatActivity() {
     // ── Device identity ───────────────────────────────────────────────────────
     private val DEVICE_ID: ByteArray by lazy { getOrCreateDeviceId() }
 
-    // ── Screen 2: No Tethering ────────────────────────────────────────────────
-    private lateinit var screenNoTethering: View
-    private lateinit var openTetheringBtn:  Button
-
-    // ── Screen 3: Scanning ────────────────────────────────────────────────────
-    private lateinit var screenScanning: View
-    private lateinit var scanLogText:    TextView
-
-    // ── Screen 4: Server Found ────────────────────────────────────────────────
-    private lateinit var screenServerFound:  View
-    private lateinit var serverHostnameText: TextView
-    private lateinit var serverIpText:       TextView
-    private lateinit var serverSystemText:   TextView
-    private lateinit var serverSummaryText:  TextView
-    private lateinit var connectButton:      Button
+    private lateinit var composeUiContainer: ComposeView
+    private val currentScreenState = mutableStateOf(1)
 
     // ── Screen 5: Streaming ───────────────────────────────────────────────────
     private lateinit var surfaceView:       SurfaceView
@@ -114,21 +107,29 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Screen 2
-        screenNoTethering = findViewById(R.id.screenNoTethering)
-        openTetheringBtn  = findViewById(R.id.openTetheringBtn)
-
-        // Screen 3
-        screenScanning = findViewById(R.id.screenScanning)
-        scanLogText    = findViewById(R.id.scanLogText)
-
-        // Screen 4
-        screenServerFound  = findViewById(R.id.screenServerFound)
-        serverHostnameText = findViewById(R.id.serverHostnameText)
-        serverIpText       = findViewById(R.id.serverIpText)
-        serverSystemText   = findViewById(R.id.serverSystemText)
-        serverSummaryText  = findViewById(R.id.serverSummaryText)
-        connectButton      = findViewById(R.id.connectButton)
+        // Compose UI setup
+        composeUiContainer = findViewById(R.id.composeUiContainer)
+        composeUiContainer.setContent {
+            when (currentScreenState.value) {
+                1 -> NoUSBScreen()
+                2 -> TetherOffScreen(onEnableTether = {
+                    try {
+                        startActivity(Intent("android.settings.TETHER_SETTINGS"))
+                    } catch (_: Exception) {
+                        startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                    }
+                })
+                3 -> ScanningScreen(onServerFound = {})
+                4 -> ServerFoundScreen(
+                    hostname = discoveredHostname,
+                    ip = discoveredIp ?: "",
+                    system = discoveredSystem,
+                    onStartExtending = {
+                        discoveredIp?.let { ip -> startStreaming(ip, discoveredPort) }
+                    }
+                )
+            }
+        }
 
         // Screen 5
         surfaceView       = findViewById(R.id.surfaceView)
@@ -144,19 +145,6 @@ class MainActivity : AppCompatActivity() {
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableImmersiveMode()
-
-        openTetheringBtn.setOnClickListener {
-            try {
-                startActivity(Intent("android.settings.TETHER_SETTINGS"))
-            } catch (_: Exception) {
-                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
-            }
-        }
-
-        connectButton.setOnClickListener {
-            val ip = discoveredIp ?: return@setOnClickListener
-            startStreaming(ip, discoveredPort)
-        }
 
         surfaceView.setOnClickListener {
             streamOverlay.visibility = View.VISIBLE
@@ -188,24 +176,34 @@ class MainActivity : AppCompatActivity() {
                     showScreen(3)
                     startDiscoveryListener()
                     return@launch
-                } else {
-                    showScreen(2)
-                    delay(1000)
                 }
+                
+                val usbConnected = isUsbConnected()
+                withContext(Dispatchers.Main) {
+                    val newState = if (usbConnected) 2 else 1
+                    if (currentScreenState.value != newState) {
+                        showScreen(newState)
+                    }
+                }
+                delay(1000)
             }
         }
     }
 
     private suspend fun showScreen(n: Int) = withContext(Dispatchers.Main) {
-        screenNoTethering.visibility = if (n == 2) View.VISIBLE else View.GONE
-        screenScanning.visibility    = if (n == 3) View.VISIBLE else View.GONE
-        screenServerFound.visibility = if (n == 4) View.VISIBLE else View.GONE
+        currentScreenState.value = n
+        composeUiContainer.visibility = if (n <= 4) View.VISIBLE else View.GONE
         surfaceView.visibility       = if (n == 5) View.VISIBLE else View.GONE
         fpsPill.visibility           = View.GONE
         streamOverlay.visibility     = View.GONE
     }
 
     // ── USB / tethering detection ─────────────────────────────────────────────
+
+    private fun isUsbConnected(): Boolean {
+        val intent = registerReceiver(null, android.content.IntentFilter("android.hardware.usb.action.USB_STATE"))
+        return intent?.extras?.getBoolean("connected") ?: false
+    }
 
     private fun isUsbTetherActive(): Boolean {
         return try {
@@ -268,9 +266,6 @@ class MainActivity : AppCompatActivity() {
     private fun appendLog(line: String) {
         logLines.add(line)
         if (logLines.size > 6) logLines.removeAt(0)
-        runOnUiThread {
-            scanLogText.text = logLines.joinToString("\n") { "$ $it" }
-        }
     }
 
     private fun startDiscoveryListener(autoConnectIp: String? = null,
@@ -297,6 +292,7 @@ class MainActivity : AppCompatActivity() {
         listenJob = ioScope.launch {
             var pendingIp   = autoConnectIp
             var pendingPort = autoConnectPort
+            var lastSeenTimestamp = System.currentTimeMillis()
 
             // USB watchdog: if tethering drops while scanning or on server-found
             // screen, cancel discovery and return to home immediately.
@@ -307,6 +303,10 @@ class MainActivity : AppCompatActivity() {
                         discoverySocket?.close()
                         startStateLoop()
                         return@launch
+                    }
+                    val now = System.currentTimeMillis()
+                    if (currentScreenState.value == 4 && (now - lastSeenTimestamp) > 5000) {
+                        showScreen(3)
                     }
                 }
             }
@@ -333,6 +333,8 @@ class MainActivity : AppCompatActivity() {
                         String(packet.data, 0, packet.length, Charsets.UTF_8)
                     )
                     if (json.optString("app") != "TetherLink") continue
+
+                    lastSeenTimestamp = System.currentTimeMillis()
 
                     val ip       = packet.address.hostAddress ?: continue
                     val name     = json.optString("name", "TetherLink Server")
@@ -368,13 +370,6 @@ class MainActivity : AppCompatActivity() {
                         discoveredSystem   = system
                         discoveredRes      = res
                         withContext(Dispatchers.Main) {
-                            serverHostnameText.text = hostname
-                            serverIpText.text       = ip
-                            serverSystemText.text   = system
-                            serverSummaryText.text  = buildString {
-                                if (res.isNotEmpty()) append("$res · ")
-                                append(ip)
-                            }
                             showScreen(4)
                         }
                     }
@@ -524,6 +519,8 @@ class MainActivity : AppCompatActivity() {
                 socket.close()
 
             } catch (e: Exception) {
+                // Ignore silent timeouts during recovery
+            } finally {
                 // Auto-reconnect: if tethering is still up, go straight to scanning
                 // (skip the state loop so we never flash the "No Tethering" screen).
                 // If tethering went down, fall back to the normal state loop.

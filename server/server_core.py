@@ -649,23 +649,20 @@ class ServerCore:
     def _on_monitors_changed(self):
         """
         Fires when GNOME Display Settings applies a new monitor configuration.
-        If a stream is active, proactively release PipeWire via idle_add BEFORE
-        Mutter reconfigures the virtual display — this prevents the deadlock that
-        crashes the session (same root cause as the mirror-mode freeze).
-        If idle, just cache the new resolution for the next connection.
+        We do NOT release the stream here — for layout-only changes (e.g. mirror,
+        position) Mutter doesn't destroy the PipeWire node, so the stream survives
+        and the user's GNOME layout choice is preserved. If Mutter does destroy the
+        node (e.g. resolution change), GStreamer's error/EOS handler cleans up.
         """
         if not self._bus or not self._state.running:
             return
-        if self._capture is not None:
-            self._log("Display config changed — releasing stream")
-            GLib.idle_add(self._release_active_stream)
-        elif self._config.width == 0 and self._config.height == 0:
+        if self._config.width == 0 and self._config.height == 0:
             detected = detect_primary_resolution_mutter(self._bus)
             if detected:
                 self._log(f"Monitor config updated — next stream: {detected[0]}×{detected[1]}")
 
     def _release_active_stream(self):
-        """Release GStreamer pipeline and disconnect client. Safe to call from GLib thread."""
+        """Release GStreamer pipeline and disconnect client."""
         capture = self._capture
         if capture:
             self._capture = None
@@ -678,7 +675,6 @@ class ServerCore:
                 self._conn.shutdown(socket.SHUT_RDWR)
             except Exception:
                 pass
-        return False
 
     def set_monitor_position(self, position: str) -> None:
         """Update position in config. Applied at next server start."""

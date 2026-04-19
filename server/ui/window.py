@@ -151,6 +151,13 @@ class TetherLinkWindow(Gtk.ApplicationWindow):
         icon_row.append(desc_box)
         icon_row.append(btn_settings)
         card.append(icon_row)
+
+        warn = _label(
+            "⚠  Avoid changing orientation — this will disconnect the stream.",
+            "setting-hint", Gtk.Align.CENTER,
+        )
+        warn.set_margin_top(6)
+        card.append(warn)
         box.append(card)
 
         # ── Resolution info ───────────────────────────────────────────────────
