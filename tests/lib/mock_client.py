@@ -57,12 +57,18 @@ class MockClient:
         return "error", None
 
     def read_frame(self) -> bytes:
-        """Read one size-prefixed JPEG frame."""
+        """Read one size-prefixed frame (JPEG or H.264 bytes)."""
         size_bytes = self._recvall(4)
         size = struct.unpack(">I", size_bytes)[0]
         if size > _MAX_FRAME_BYTES:
             raise ValueError(f"Frame size {size} exceeds {_MAX_FRAME_BYTES} byte limit")
         return self._recvall(size)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
 
     def close(self) -> None:
         if self._sock:
