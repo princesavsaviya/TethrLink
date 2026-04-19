@@ -4,6 +4,7 @@ from typing import List
 from tests.lib.result import TestResult
 
 ICON = {"PASS": "✅", "FAIL": "❌", "WARN": "⚠️", "SKIP": "⏭️"}
+_UNKNOWN_ICON = "❓"
 
 MANUAL_CHECKLIST = """
 ## Manual Tests Required Before App Store Submission
@@ -21,8 +22,15 @@ MANUAL_CHECKLIST = """
 """
 
 
+def _overall(results: List[TestResult]) -> str:
+    if not results:
+        return "FAIL"
+    return "PASS" if all(r.status in ("PASS", "WARN", "SKIP") for r in results) else "FAIL"
+
+
 def generate(results: List[TestResult], report_dir: str) -> str:
-    overall = "PASS" if all(r.status in ("PASS", "WARN", "SKIP") for r in results) else "FAIL"
+    os.makedirs(report_dir, exist_ok=True)
+    overall = _overall(results)
     icon = ICON[overall]
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -40,13 +48,16 @@ def generate(results: List[TestResult], report_dir: str) -> str:
     ]
 
     for r in results:
-        lines.append(f"| {r.name} | {ICON[r.status]} {r.status} | {r.notes} |")
+        safe_name = r.name.replace("|", "\\|")
+        safe_notes = r.notes.replace("|", "\\|")
+        lines.append(f"| {safe_name} | {ICON.get(r.status, _UNKNOWN_ICON)} {r.status} | {safe_notes} |")
 
     lines += ["", "---", "", "## Details", ""]
 
     for r in results:
         if r.details:
-            lines += [f"### {r.name}", "", "```", r.details.strip(), "```", ""]
+            safe_details = r.details.strip().replace("```", "\\`\\`\\`")
+            lines += [f"### {r.name}", "", "```", safe_details, "```", ""]
 
     lines.append(MANUAL_CHECKLIST)
 
@@ -62,10 +73,10 @@ def print_summary(results: List[TestResult]) -> None:
     print("TETHERLINK TEST SUITE RESULTS")
     print("=" * 60)
     for r in results:
-        print(f"  {ICON[r.status]} {r.status:4s}  {r.name}")
+        print(f"  {ICON.get(r.status, _UNKNOWN_ICON)} {r.status:4s}  {r.name}")
         if r.notes:
             print(f"         {r.notes}")
-    overall = "PASS" if all(r.status in ("PASS", "WARN", "SKIP") for r in results) else "FAIL"
+    overall = _overall(results)
     print("=" * 60)
     print(f"  Overall: {ICON[overall]} {overall}")
     print("=" * 60 + "\n")
