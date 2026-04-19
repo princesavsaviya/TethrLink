@@ -5,14 +5,12 @@ Used by both app.py (GUI) and the CLI shim (tetherlink_server.py).
 """
 
 import logging
-import os
 import socket
 import struct
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable, List, Optional
 
 import dbus
@@ -21,7 +19,7 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst
 
-from discovery import DiscoveryBroadcaster
+from .discovery import DiscoveryBroadcaster
 
 log = logging.getLogger("TetherLink")
 
@@ -117,7 +115,7 @@ def detect_primary_resolution_mutter(bus) -> Optional[tuple]:
         proxy = bus.get_object("org.gnome.Mutter.DisplayConfig",
                                "/org/gnome/Mutter/DisplayConfig")
         iface = dbus.Interface(proxy, "org.gnome.Mutter.DisplayConfig")
-        _serial, monitors, logical_monitors, _props = iface.GetCurrentState()
+        _, monitors, logical_monitors, _ = iface.GetCurrentState()
         for lm in logical_monitors:
             if not bool(lm[4]):
                 continue
@@ -265,7 +263,6 @@ class MutterVirtualDisplay:
         log.info("Creating Mutter ScreenCast session...")
 
         # Try to suppress GNOME screen-recording indicator (Mutter ≥ 44 honours this)
-        session_props: dict = {}
         for props in [{"disable-notifications": dbus.Boolean(True)}, {}]:
             try:
                 self._session_path = str(self._sc.CreateSession(
@@ -293,7 +290,7 @@ class MutterVirtualDisplay:
         session_obj.connect_to_signal("Closed", _on_closed, dbus_interface=MUTTER_SES_IF)
 
         stream_path = str(session.RecordVirtual(
-            dbus.Dictionary({"cursor-mode": dbus.UInt32(1)}, signature="sv")
+            dbus.Dictionary({"cursor-mode": dbus.UInt32(0)}, signature="sv")
         ))
         stream_obj = self._bus.get_object(MUTTER_BUS, stream_path)
         stream_obj.connect_to_signal("PipeWireStreamAdded",
@@ -325,7 +322,8 @@ class MutterVirtualDisplay:
 class PipeWireCapture:
     def __init__(self, node_id: int, width: int, height: int, codec: int,
                  fps: int, bitrate: int, h264_width: int, quality: int = 90,
-                 flip_orientation: bool = False):
+                 flip_orientation: bool = False,
+                 on_error: Optional[Callable] = None):
         self.width  = width
         self.height = height
         self.codec  = codec
@@ -333,8 +331,10 @@ class PipeWireCapture:
         self._fw    = width
         self._fh    = height
         self._lock  = threading.Lock()
-        self._jpegenc = None  # reference for live quality changes
-        self._flip    = None  # reference for live orientation changes
+        self._jpegenc  = None
+        self._flip     = None
+        self._on_error = on_error  # called when pipeline errors — lets ServerCore abort the stream
+        self._closed   = False     # guard against double-close
 
         Gst.init(None)
         self._loop = GLib.MainLoop()
@@ -361,7 +361,7 @@ class PipeWireCapture:
                 f"pipewiresrc path={node_id} always-copy=true "
                 f"! video/x-raw,width={width},height={height},max-framerate={fps}/1 "
                 f"! videoconvert "
-                f"! video/x-raw,format=I420 "
+                f"! video/x-raw,format=YUY2 "
                 f"! videoflip name=flip method={flip_method} "
                 f"! jpegenc name=jpegenc quality={quality} "
                 f"! appsink name=sink emit-signals=true "
@@ -377,6 +377,15 @@ class PipeWireCapture:
 
         sink = self._pipeline.get_by_name("sink")
         sink.connect("new-sample", self._on_sample)
+
+        # Watch pipeline bus for errors/EOS — fires when PipeWire node is
+        # destroyed (e.g. Mutter reconfigures displays). We release the
+        # pipeline immediately so Mutter isn't blocked waiting for PipeWire.
+        gst_bus = self._pipeline.get_bus()
+        gst_bus.add_signal_watch()
+        gst_bus.connect("message::error", self._on_bus_error)
+        gst_bus.connect("message::eos",   self._on_bus_eos)
+
         ret = self._pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
             raise RuntimeError("GStreamer pipeline failed")
@@ -411,17 +420,49 @@ class PipeWireCapture:
             self._jpegenc.set_property("quality", quality)
 
     def set_orientation(self, portrait: bool) -> None:
-        """Hot-reload orientation via videoflip. No-op for H.264."""
+        """Hot-reload orientation via videoflip. Swaps reported frame dims. No-op for H.264."""
         if self._flip is not None:
             method = "clockwise" if portrait else "none"
             self._flip.set_property("method", method)
+            # After rotation the output is transposed — update reported dims so
+            # the server sends the correct stream size to the client.
+            with self._lock:
+                if portrait:
+                    self._fw, self._fh = self.height, self.width
+                else:
+                    self._fw, self._fh = self.width, self.height
 
     def get_frame(self):
         with self._lock:
             return (self._frame, self._fw, self._fh) if self._frame else None
 
+    def _on_bus_error(self, _, message):
+        err, _ = message.parse_error()
+        log.warning("GStreamer pipeline error: %s — scheduling release", err)
+        # Must NOT call set_state() from inside a GStreamer signal handler —
+        # the state machine is not reentrant and will crash.  Schedule it on
+        # the next GLib iteration so the signal handler returns first.
+        GLib.idle_add(self._release_and_notify)
+
+    def _on_bus_eos(self, *_):
+        log.info("GStreamer EOS — scheduling release")
+        GLib.idle_add(self._release_and_notify)
+
+    def _release_and_notify(self):
+        """Called via GLib.idle_add — safe to change GStreamer state here."""
+        self._release_pipeline()
+        if self._on_error:
+            self._on_error()
+        return False  # don't repeat
+
+    def _release_pipeline(self):
+        """Set pipeline to NULL to free the PipeWire node."""
+        if not self._closed:
+            self._closed = True
+            self._pipeline.set_state(Gst.State.NULL)
+
     def close(self):
-        self._pipeline.set_state(Gst.State.NULL)
+        self._release_pipeline()
         self._loop.quit()
 
 
@@ -445,6 +486,7 @@ class ServerCore:
         self._on_external_stop = on_external_stop  # called when GNOME indicator stops the cast
         self._display: Optional[MutterVirtualDisplay] = None
         self._capture: Optional[PipeWireCapture]      = None
+        self._conn:    Optional[socket.socket]        = None  # active client socket
         self._broadcaster: Optional[DiscoveryBroadcaster] = None
         self._srv: Optional[socket.socket]            = None
         self._bus                                     = None
@@ -478,6 +520,21 @@ class ServerCore:
 
         self._broadcaster = DiscoveryBroadcaster(actual_port, 0, 0)
         self._broadcaster.start()
+
+        # Subscribe to display config changes so we pick up the new resolution
+        # the next time a client connects (after the user rearranges monitors).
+        try:
+            dc_proxy = self._bus.get_object(
+                "org.gnome.Mutter.DisplayConfig",
+                "/org/gnome/Mutter/DisplayConfig",
+            )
+            dc_proxy.connect_to_signal(
+                "MonitorsChanged",
+                self._on_monitors_changed,
+                dbus_interface="org.gnome.Mutter.DisplayConfig",
+            )
+        except Exception as e:
+            log.debug("Could not subscribe to MonitorsChanged: %s", e)
 
         self._state.update(running=True, port=actual_port)
         self._log(f"Waiting for device on port {actual_port}…")
@@ -589,9 +646,32 @@ class ServerCore:
         if self._capture:
             self._capture.set_orientation(orientation == "portrait")
 
+    def _on_monitors_changed(self):
+        """
+        Fires when GNOME Display Settings applies a new monitor configuration.
+        Re-detect the primary resolution so the next client connection uses the
+        updated size. No action if nothing is currently streaming.
+        """
+        if not self._bus or not self._state.running:
+            return
+        if self._config.width == 0 and self._config.height == 0:
+            detected = detect_primary_resolution_mutter(self._bus)
+            if detected:
+                self._log(f"Monitor config updated — next stream: {detected[0]}×{detected[1]}")
+
     def set_monitor_position(self, position: str) -> None:
         """Update position in config. Applied at next server start."""
         self._config.monitor_position = position
+
+    def apply_monitor_position(self, position: str) -> None:
+        """Apply new position immediately via xrandr without restarting the stream."""
+        self._config.monitor_position = position
+        if self._display is None:
+            return
+        virtual = _get_virtual_output_name()
+        if virtual:
+            self._apply_position(virtual)
+            self._log(f"Position applied live: device {position} of main")
 
     def _get_primary_output_name(self) -> Optional[str]:
         try:
@@ -628,7 +708,7 @@ class ServerCore:
             except OSError:
                 break
 
-    def _handle_client(self, conn: socket.socket, addr: tuple) -> None:
+    def _handle_client(self, conn: socket.socket, _: tuple) -> None:
         conn.settimeout(HANDSHAKE_TIMEOUT_S)
         try:
             hello = conn.recv(6 + 16 + 8 + 64)
@@ -653,21 +733,22 @@ class ServerCore:
             conn.close()
             return
 
-        # ── Save device dims whenever received ────────────────────────────────
+        self._conn = conn  # store so _on_session_closed can abort the stream
+
+        # ── Save device dims for reference (used by UI canvas, not for resolution) ──
         if screen_w > 0 and screen_h > 0:
             self._config.device_width  = screen_w
             self._config.device_height = screen_h
 
-        # ── Resolve resolution: user config > device dims > auto-detect ──────
+        # ── Resolve resolution: user config override → PC's primary monitor ──
+        # The virtual display always matches the PC's main screen unless the
+        # user has explicitly set a custom resolution in the config.
         if self._config.width > 0 and self._config.height > 0:
             width, height = self._config.width, self._config.height
             self._log(f"Using configured resolution: {width}×{height}")
-        elif screen_w > 0 and screen_h > 0:
-            width, height = screen_w, screen_h
-            self._log(f"Using device resolution: {width}×{height}")
         else:
             width, height = resolve_resolution(self._bus, 0, 0)
-            self._log(f"Using detected resolution: {width}×{height}")
+            self._log(f"Using primary monitor resolution: {width}×{height}")
         self._state.update_direct(active_width=width, active_height=height)
 
         if self._config.orientation == "portrait" and width > height:
@@ -694,21 +775,49 @@ class ServerCore:
             self._log("Virtual display ready — drag windows onto it!")
 
             def _on_session_closed():
-                if self._state.running:
-                    self._log("Screen cast session closed externally — stopping server")
-                    threading.Thread(target=self.stop, daemon=True).start()
-                    if self._on_external_stop:
-                        GLib.idle_add(self._on_external_stop)
+                # D-Bus signal handler — runs inside the GLib main loop.
+                # Schedule the actual cleanup via idle_add so we don't call
+                # set_state() or D-Bus methods from inside a signal callback.
+                GLib.idle_add(_do_session_cleanup)
+
+            def _do_session_cleanup():
+                if self._capture:
+                    try:
+                        self._capture.close()
+                    except Exception:
+                        pass
+                    self._capture = None
+                if self._conn:
+                    try:
+                        self._conn.shutdown(socket.SHUT_RDWR)
+                    except Exception:
+                        pass
+                self._log("Display config changed — stream stopped, waiting for reconnect")
+                return False  # don't repeat
             display.on_closed = _on_session_closed
             self._display = display
 
             self._apply_display_layout()
+
+            def _on_capture_error():
+                # GStreamer got a pipeline error — PipeWire node was destroyed,
+                # most likely because the user applied a display config change.
+                # The pipeline is already set to NULL (PipeWire released), so
+                # Mutter can finish reconfiguring. Shut down the client socket
+                # so the stream loop exits and the finally block runs cleanly.
+                self._log("PipeWire stream ended — display config likely changed")
+                if self._conn:
+                    try:
+                        self._conn.shutdown(socket.SHUT_RDWR)
+                    except Exception:
+                        pass
 
             capture = PipeWireCapture(
                 node_id, width, height, codec,
                 self._live_fps, self._config.bitrate, self._config.h264_width,
                 self._live_quality,
                 flip_orientation=(self._config.orientation == "portrait"),
+                on_error=_on_capture_error,
             )
             self._capture = capture
             time.sleep(CAPTURE_INIT_SLEEP_S)
@@ -719,7 +828,15 @@ class ServerCore:
             )
 
             # ── Stream ────────────────────────────────────────────────────────
-            conn.settimeout(None)
+            # Use a short timeout so sendall() raises OSError within ~5s when
+            # USB is unplugged (TCP retransmissions would otherwise hold the
+            # _client_lock for minutes before the kernel gives up).
+            conn.settimeout(5.0)
+            # Keepalives catch dead connections during idle stretches (no frames).
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 2)
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 1)
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
             for _ in range(FRAME_WAIT_ATTEMPTS):
                 r = capture.get_frame()
                 if r:
@@ -743,7 +860,7 @@ class ServerCore:
                 start = time.monotonic()
                 r = capture.get_frame()
                 if r:
-                    raw, fw, fh = r
+                    raw, _, _ = r
                     conn.sendall(struct.pack(">I", len(raw)) + raw)
                     frame_count += 1
 
@@ -757,14 +874,19 @@ class ServerCore:
                 if sleep > 0:
                     time.sleep(sleep)
 
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, OSError):
             self._log(f"Client disconnected: {device_name}")
         except Exception as e:
             self._log(f"Stream error ({device_name}): {e}")
         finally:
+            self._conn = None
             self._state.update(connected=False, client_name="", fps=0)
-            if capture:
-                capture.close()
+            if capture and self._capture is not None:
+                # _on_session_closed may have already closed this — guard against double-close
+                try:
+                    capture.close()
+                except Exception:
+                    pass
                 self._capture = None
             if self._primary_was_hidden:
                 primary_out = self._get_primary_output_name()
