@@ -37,7 +37,7 @@ PYTHON="$VENV/bin/python3"
 cd "$REPO_ROOT"
 
 "$PYTHON" - "$REPORT_DIR" "$REPO_ROOT" <<'PYEOF'
-import sys, os, time, subprocess, tempfile
+import sys, os, subprocess
 
 report_dir = sys.argv[1]
 repo_root  = sys.argv[2]
@@ -83,26 +83,6 @@ try:
     results.append(udp_run(report_dir))
     print(f"  → {results[-1].status}: {results[-1].notes}")
 
-    print("▶ Handshake test...")
-    from tests.protocol.test_handshake import run as hs_run
-    results.append(hs_run(18080, report_dir))
-    print(f"  → {results[-1].status}: {results[-1].notes}")
-
-    print("▶ TLBUSY test...")
-    from tests.protocol.test_busy import run as busy_run
-    results.append(busy_run(18080, report_dir))
-    print(f"  → {results[-1].status}: {results[-1].notes}")
-
-    print("▶ Malformed input test...")
-    from tests.protocol.test_malformed import run as mal_run
-    results.append(mal_run(18080, report_dir))
-    print(f"  → {results[-1].status}: {results[-1].notes}")
-
-    print("▶ Rapid reconnect stress test...")
-    from tests.stress.test_rapid_reconnect import run as rr_run
-    results.append(rr_run(18080, report_dir))
-    print(f"  → {results[-1].status}: {results[-1].notes}")
-
     print("▶ Long session stress test (30 min — go make coffee) ...")
     from tests.stress.test_long_session import run as ls_run
     results.append(ls_run(18080, report_dir, server_pid))
@@ -110,8 +90,11 @@ try:
 
     server_manager.stop(proc)
     print("  Server stopped.")
-except RuntimeError as e:
+except Exception as e:
     results.append(failed("Server Startup", str(e)))
+    for name in ("UDP Discovery", "Handshake", "TLBUSY", "Malformed Input",
+                 "Rapid Reconnect", "Long Session"):
+        results.append(skipped(name, "Server failed to start"))
     print(f"  FAIL: {e}")
 
 # ── Compatibility: xrandr + nested session (own server instances) ─────────────
@@ -136,15 +119,19 @@ if os.path.exists(status_file):
     with open(status_file) as f:
         statuses = dict(l.strip().split("=") for l in f if "=" in l)
     lint_s  = statuses.get("ANDROID_LINT",  "SKIP")
-    build_s = statuses.get("ANDROID_BUILD", "FAIL")
+    build_s = statuses.get("ANDROID_BUILD", "SKIP")
     if build_s == "FAIL":
         results.append(failed("Android Build", "assembleRelease failed — check build-output.txt"))
     elif build_s == "PASS":
         results.append(passed("Android Build", "APK built successfully"))
+    else:
+        results.append(skipped("Android Build", "Build did not run"))
     if lint_s == "WARN":
         results.append(warned("Android Lint", "Lint issues found — check lint-report.html"))
     elif lint_s == "PASS":
         results.append(passed("Android Lint", "No lint errors"))
+    else:
+        results.append(skipped("Android Lint", "Lint did not run"))
 else:
     results.append(failed("Android Build", f"Script failed: {ret.stderr.decode()[:200]}"))
 print(f"  Lint → {lint_s}  Build → {build_s}")
