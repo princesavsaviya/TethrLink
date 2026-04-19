@@ -1,6 +1,7 @@
 package com.tetherlink
 
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.graphics.Canvas
 import android.os.Bundle
 import android.provider.Settings
@@ -430,6 +431,7 @@ class MainActivity : AppCompatActivity() {
                 // Showing Screen 5 before TLOK causes a black-screen flash on every
                 // TLBUSY retry and makes the UI loop visibly between screens.
                 withContext(Dispatchers.Main) {
+                    lockToLandscape()
                     showScreen(5)
                     surfaceView.visibility   = View.VISIBLE
                     streamOverlay.visibility = View.GONE
@@ -525,9 +527,11 @@ class MainActivity : AppCompatActivity() {
                 // (skip the state loop so we never flash the "No Tethering" screen).
                 // If tethering went down, fall back to the normal state loop.
                 if (isUsbTetherActive()) {
+                    withContext(Dispatchers.Main) { unlockOrientation() }
                     showScreen(3)
                     startDiscoveryListener(autoConnectIp = ip, autoConnectPort = port)
                 } else {
+                    withContext(Dispatchers.Main) { unlockOrientation() }
                     startStateLoop()
                 }
             }
@@ -540,15 +544,33 @@ class MainActivity : AppCompatActivity() {
         val holder: SurfaceHolder = surfaceView.holder
         val canvas: Canvas = holder.lockCanvas() ?: return
         try {
-            val dst = android.graphics.RectF(
-                0f, 0f, canvas.width.toFloat(), canvas.height.toFloat()
-            )
             canvas.drawColor(android.graphics.Color.BLACK)
+            val bmpW = bitmap.width.toFloat()
+            val bmpH = bitmap.height.toFloat()
+            val canW = canvas.width.toFloat()
+            val canH = canvas.height.toFloat()
+            val scale = minOf(canW / bmpW, canH / bmpH)
+            val drawW = bmpW * scale
+            val drawH = bmpH * scale
+            val left  = (canW - drawW) / 2f
+            val top   = (canH - drawH) / 2f
+            val dst   = android.graphics.RectF(left, top, left + drawW, top + drawH)
             canvas.drawBitmap(bitmap, null, dst, null)
         } finally {
             holder.unlockCanvasAndPost(canvas)
         }
     }
+    // ── Orientation helpers ───────────────────────────────────────────────────
+
+    private fun lockToLandscape() {
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    }
+
+    private fun unlockOrientation() {
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+    }
+
+    // ── FPS ───────────────────────────────────────────────────────────────────
 
     private suspend fun updateFps() {
         frameCount++
