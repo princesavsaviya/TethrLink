@@ -21,6 +21,10 @@ from gi.repository import GLib, Gst
 
 from .discovery import DiscoveryBroadcaster
 
+# Mandatory global D-Bus initialization for GLib loop integration.
+# Must be called once before any D-Bus objects are created.
+dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+
 log = logging.getLogger("TetherLink")
 
 VERSION = "0.9.5"
@@ -70,8 +74,6 @@ class ServerConfig:
     device_width: int = 0   # saved dims from last connected device
     device_height: int = 0
     orientation: str = "landscape"      # "landscape" | "portrait"
-    monitor_position: str = "right"     # "left" | "right" | "above" | "below"
-    display_mode: str = "extend"        # "extend" | "mirror" | "second_only"
     auto_start: bool = False
 
 
@@ -200,26 +202,15 @@ def detect_codec(codec_str: str) -> int:
     return CODEC_JPEG
 
 
-def _get_virtual_output_name() -> Optional[str]:
-    """Find the xrandr output name for the Mutter virtual display."""
-    try:
-        result = subprocess.run(["xrandr", "--query"], capture_output=True,
-                                text=True, timeout=3)
-        # Pass 1: case-insensitive "virtual" + connected
-        for line in result.stdout.splitlines():
-            lower = line.lower()
-            if "virtual" in lower and " connected" in lower:
-                return line.split()[0]
-        # Pass 2: any non-primary connected output (catches unusual names)
-        for line in result.stdout.splitlines():
-            if " connected" in line and " primary" not in line:
-                name = line.split()[0]
-                log.debug("Using non-primary output as virtual: %s", name)
-                return name
-        log.debug("xrandr outputs:\n%s", result.stdout[:800])
-    except Exception as e:
-        log.debug("xrandr query failed: %s", e)
-    return None
+def detect_session_type() -> str:
+    """Return 'wayland' if running in a Wayland session, otherwise 'x11'."""
+    import os
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return "wayland"
+    xdg = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    if xdg == "wayland":
+        return "wayland"
+    return "x11"
 
 
 # ── Mutter virtual display ────────────────────────────────────────────────────
@@ -228,7 +219,7 @@ def cleanup_orphaned_sessions(bus):
     try:
         sc_obj = bus.get_object(MUTTER_BUS, MUTTER_PATH)
         intro  = dbus.Interface(sc_obj, "org.freedesktop.DBus.Introspectable")
-        import xml.etree.ElementTree as ET
+        import defusedxml.ElementTree as ET
         root = ET.fromstring(intro.Introspect())
         for node in root.findall("node"):
             name = node.get("name", "")
@@ -251,9 +242,9 @@ class MutterVirtualDisplay:
         self._error      = None
         self._in_setup   = True   # True until setup() returns
         self.on_closed   = None   # callable(); set after setup() for external close events
-        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         self._bus  = bus or dbus.SessionBus()
-        self._loop = GLib.MainLoop()
+        self._context = GLib.MainContext()
+        self._loop    = GLib.MainLoop(self._context)
         cleanup_orphaned_sessions(self._bus)
         sc_obj    = self._bus.get_object(MUTTER_BUS, MUTTER_PATH)
         self._sc  = dbus.Interface(sc_obj, MUTTER_SC_IF)
@@ -466,6 +457,70 @@ class PipeWireCapture:
         self._loop.quit()
 
 
+# ── X11 capture (mss) ────────────────────────────────────────────────────────
+
+class X11MssCapture:
+    """
+    Screen capture for X11 sessions using mss.
+    Grabs the primary monitor at the requested FPS and produces JPEG frames.
+    Interface mirrors PipeWireCapture.get_frame() so the streaming loop is
+    session-type agnostic.
+    """
+    def __init__(self, width: int, height: int, fps: int, quality: int = 90,
+                 on_error: Optional[Callable] = None):
+        import mss
+        self.width   = width
+        self.height  = height
+        self._fps    = fps
+        self._quality = quality
+        self._on_error = on_error
+        self._frame: Optional[bytes] = None
+        self._lock  = threading.Lock()
+        self._stop  = threading.Event()
+        self._mss   = mss.mss()
+        # Use the first monitor (index 1 = primary in mss)
+        self._monitor = self._mss.monitors[1]
+        log.info("X11 capture: mss monitor %s", self._monitor)
+        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._thread.start()
+
+    def _capture_loop(self) -> None:
+        from PIL import Image
+        from io import BytesIO
+        interval = 1.0 / self._fps
+        try:
+            while not self._stop.is_set():
+                t = time.monotonic()
+                img = self._mss.grab(self._monitor)
+                pil = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
+                if pil.size != (self.width, self.height):
+                    pil = pil.resize((self.width, self.height), Image.LANCZOS)
+                buf = BytesIO()
+                pil.save(buf, format="JPEG", quality=self._quality)
+                with self._lock:
+                    self._frame = buf.getvalue()
+                elapsed = time.monotonic() - t
+                sleep = interval - elapsed
+                if sleep > 0:
+                    time.sleep(sleep)
+        except Exception as e:
+            log.warning("X11 capture error: %s", e)
+            if self._on_error:
+                self._on_error()
+
+    def set_quality(self, quality: int) -> None:
+        self._quality = quality
+
+    def set_orientation(self, portrait: bool) -> None:
+        pass  # orientation flip not supported on X11 mss path
+
+    def get_frame(self):
+        with self._lock:
+            return (self._frame, self.width, self.height) if self._frame else None
+
+    def close(self) -> None:
+        self._stop.set()
+        self._mss.close()
 
 
 # ── ServerCore ────────────────────────────────────────────────────────────────
@@ -495,7 +550,6 @@ class ServerCore:
         self._client_lock = threading.Lock()
         self._live_fps          = config.fps
         self._live_quality      = config.quality
-        self._primary_was_hidden = False  # True when display_mode == second_only
 
     def _log(self, msg: str) -> None:
         log.info(msg)
@@ -570,69 +624,6 @@ class ServerCore:
         if self._capture:
             self._capture.set_quality(quality)
 
-    def _apply_display_layout(self) -> None:
-        """Apply monitor position, display mode, and orientation via xrandr after display setup."""
-        virtual = _get_virtual_output_name()
-        if not virtual:
-            log.debug("Virtual output not found in xrandr — layout not applied")
-            return
-
-        mode = self._config.display_mode
-        if mode == "mirror":
-            primary_out = self._get_primary_output_name()
-            if primary_out:
-                subprocess.run(["xrandr", "--output", virtual,
-                                "--same-as", primary_out], check=False, capture_output=True)
-                self._log(f"Display mode: mirror ({virtual} → {primary_out})")
-        elif mode == "second_only":
-            primary_out = self._get_primary_output_name()
-            if primary_out:
-                subprocess.run(["xrandr",
-                                "--output", primary_out, "--off",
-                                "--output", virtual, "--auto"],
-                               check=False, capture_output=True)
-                self._primary_was_hidden = True
-                self._log(f"Display mode: tablet only ({primary_out} hidden)")
-        else:  # extend
-            self._apply_position(virtual)
-
-        # Portrait rotation (xrandr rotate on top of dimension-swapped virtual display)
-        if self._config.orientation == "portrait":
-            subprocess.run(["xrandr", "--output", virtual, "--rotate", "left"],
-                           check=False, capture_output=True)
-            self._log("Orientation: portrait (rotated left)")
-
-    def _apply_position(self, virtual: str) -> None:
-        """Position virtual display relative to primary via xrandr."""
-        if not self._bus:
-            return
-        primary = detect_primary_resolution_mutter(self._bus) or (FALLBACK_WIDTH, FALLBACK_HEIGHT)
-        pw, ph   = primary
-        position = self._config.monitor_position
-        primary_out = self._get_primary_output_name()
-        vw = self._display.width  if self._display else FALLBACK_WIDTH
-        vh = self._display.height if self._display else FALLBACK_HEIGHT
-
-        if position == "right":
-            subprocess.run(["xrandr", "--output", virtual, "--pos", f"{pw}x0"],
-                           check=False, capture_output=True)
-        elif position == "left":
-            subprocess.run(["xrandr", "--output", virtual, "--pos", "0x0"],
-                           check=False, capture_output=True)
-            if primary_out:
-                subprocess.run(["xrandr", "--output", primary_out, "--pos", f"{vw}x0"],
-                               check=False, capture_output=True)
-        elif position == "above":
-            subprocess.run(["xrandr", "--output", virtual, "--pos", "0x0"],
-                           check=False, capture_output=True)
-            if primary_out:
-                subprocess.run(["xrandr", "--output", primary_out, "--pos", f"0x{vh}"],
-                               check=False, capture_output=True)
-        elif position == "below":
-            subprocess.run(["xrandr", "--output", virtual, "--pos", f"0x{ph}"],
-                           check=False, capture_output=True)
-        self._log(f"Monitor position: {position}")
-
     def set_orientation(self, orientation: str) -> None:
         """Hot-reload orientation via videoflip. No pipeline restart needed."""
         self._config.orientation = orientation
@@ -654,16 +645,6 @@ class ServerCore:
             if detected:
                 self._log(f"Monitor config updated — next stream: {detected[0]}×{detected[1]}")
 
-    def _get_primary_output_name(self) -> Optional[str]:
-        try:
-            result = subprocess.run(["xrandr", "--query"], capture_output=True,
-                                    text=True, timeout=3)
-            for line in result.stdout.splitlines():
-                if " connected primary" in line:
-                    return line.split()[0]
-        except Exception:
-            pass
-        return None
 
     def _accept_loop(self) -> None:
         while not self._shutdown.is_set():
@@ -729,67 +710,80 @@ class ServerCore:
         self._log(f"Starting — {width}×{height} @ {self._live_fps} FPS "
                   f"({'H.264' if codec == CODEC_H264 else 'JPEG'})")
 
-        # ── Set up virtual display ────────────────────────────────────────────
+        # ── Set up capture (Wayland: Mutter virtual display, X11: mss) ─────────
         display = None
         capture = None
+        session_type = detect_session_type()
+        self._log(f"Session type: {session_type.upper()}")
         try:
-            display = MutterVirtualDisplay(width, height, self._bus)
-            try:
-                node_id = display.setup()
-            except Exception as e:
-                self._log(f"Virtual display failed: {e}")
-                display.close()
-                self._client_lock.release()
-                conn.close()
-                return
+            if session_type == "wayland":
+                display = MutterVirtualDisplay(width, height, self._bus)
+                try:
+                    node_id = display.setup()
+                except Exception as e:
+                    self._log(f"Virtual display failed: {e}")
+                    display.close()
+                    self._client_lock.release()
+                    conn.close()
+                    return
 
-            self._log("Virtual display ready — drag windows onto it!")
+                self._log("Virtual display ready — arrange windows using System Settings > Displays")
 
-            def _on_session_closed():
-                # D-Bus signal handler — runs inside the GLib main loop.
-                # Schedule the actual cleanup via idle_add so we don't call
-                # set_state() or D-Bus methods from inside a signal callback.
-                GLib.idle_add(_do_session_cleanup)
+                def _on_session_closed():
+                    GLib.idle_add(_do_session_cleanup)
 
-            def _do_session_cleanup():
-                if self._capture:
-                    try:
-                        self._capture.close()
-                    except Exception:
-                        pass
-                    self._capture = None
-                if self._conn:
-                    try:
-                        self._conn.shutdown(socket.SHUT_RDWR)
-                    except Exception:
-                        pass
-                self._log("Display config changed — stream stopped, waiting for reconnect")
-                return False  # don't repeat
-            display.on_closed = _on_session_closed
-            self._display = display
+                def _do_session_cleanup():
+                    if self._capture:
+                        try:
+                            self._capture.close()
+                        except Exception:
+                            pass
+                        self._capture = None
+                    if self._conn:
+                        try:
+                            self._conn.shutdown(socket.SHUT_RDWR)
+                        except Exception:
+                            pass
+                    self._log("Display config changed — stream stopped, waiting for reconnect")
+                    return False
+                display.on_closed = _on_session_closed
+                self._display = display
 
-            self._apply_display_layout()
+                def _on_capture_error():
+                    self._log("PipeWire stream ended — display config likely changed")
+                    if self._conn:
+                        try:
+                            self._conn.shutdown(socket.SHUT_RDWR)
+                        except Exception:
+                            pass
 
-            def _on_capture_error():
-                # GStreamer got a pipeline error — PipeWire node was destroyed,
-                # most likely because the user applied a display config change.
-                # The pipeline is already set to NULL (PipeWire released), so
-                # Mutter can finish reconfiguring. Shut down the client socket
-                # so the stream loop exits and the finally block runs cleanly.
-                self._log("PipeWire stream ended — display config likely changed")
-                if self._conn:
-                    try:
-                        self._conn.shutdown(socket.SHUT_RDWR)
-                    except Exception:
-                        pass
+                capture = PipeWireCapture(
+                    node_id, width, height, codec,
+                    self._live_fps, self._config.bitrate, self._config.h264_width,
+                    self._live_quality,
+                    flip_orientation=(self._config.orientation == "portrait"),
+                    on_error=_on_capture_error,
+                )
+            else:
+                # X11: capture primary screen directly with mss (JPEG only)
+                self._log("X11 session — capturing primary screen with mss. "
+                          "Arrange your windows, then connect the device.")
+                def _on_capture_error_x11():
+                    self._log("X11 capture error — stream stopped")
+                    if self._conn:
+                        try:
+                            self._conn.shutdown(socket.SHUT_RDWR)
+                        except Exception:
+                            pass
 
-            capture = PipeWireCapture(
-                node_id, width, height, codec,
-                self._live_fps, self._config.bitrate, self._config.h264_width,
-                self._live_quality,
-                flip_orientation=(self._config.orientation == "portrait"),
-                on_error=_on_capture_error,
-            )
+                capture = X11MssCapture(
+                    width, height,
+                    fps=self._live_fps,
+                    quality=self._live_quality,
+                    on_error=_on_capture_error_x11,
+                )
+                codec = CODEC_JPEG  # mss path always produces JPEG
+
             self._capture = capture
             time.sleep(CAPTURE_INIT_SLEEP_S)
 
@@ -797,6 +791,7 @@ class ServerCore:
                 resolution=f"{width}×{height}",
                 codec_name="H.264" if codec == CODEC_H264 else "JPEG",
             )
+
 
             # ── Stream ────────────────────────────────────────────────────────
             # Use a short timeout so sendall() raises OSError within ~5s when
@@ -859,14 +854,10 @@ class ServerCore:
                 except Exception:
                     pass
                 self._capture = None
-            if self._primary_was_hidden:
-                primary_out = self._get_primary_output_name()
-                if primary_out:
-                    subprocess.run(["xrandr", "--output", primary_out, "--auto"],
-                                   check=False, capture_output=True)
-                self._primary_was_hidden = False
             if display:
                 display.close()
                 self._display = None
+            # Mandatory cooldown to prevent Mutter crashes on immediate reconnect
+            time.sleep(1.0)
             self._client_lock.release()
             conn.close()

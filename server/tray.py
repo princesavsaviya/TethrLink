@@ -4,6 +4,7 @@ Shows connection status, FPS, connected client IP.
 Runs alongside the main server in a separate thread.
 """
 
+import os
 import threading
 import gi
 gi.require_version("Gtk", "3.0")
@@ -46,9 +47,14 @@ class TetherLinkTray:
         self._menu     = None
         self._items    = {}
 
+        self._icon_path = os.path.join(
+            os.path.dirname(__file__), "icons", "tetherlink.png"
+        )
+        icon_name = self._icon_path if os.path.exists(self._icon_path) else self.ICON_IDLE
+
         self._indicator = AyatanaAppIndicator3.Indicator.new(
             "tetherlink",
-            self.ICON_IDLE,
+            icon_name,
             AyatanaAppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
         self._indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
@@ -98,14 +104,16 @@ class TetherLinkTray:
     def _refresh(self):
         s = self._state
         if s.connected and s.client_ip:
-            self._indicator.set_icon_full(self.ICON_CONNECT, "Connected")
+            icon = self._icon_path if os.path.exists(self._icon_path) else self.ICON_CONNECT
+            self._indicator.set_icon_full(icon, "Connected")
             self._items["status"].set_label(f"🟢 Connected — {s.client_ip}")
             self._items["fps"].set_label(f"   {s.fps} FPS")
             self._items["res"].set_label(
                 f"   {s.resolution}" if s.resolution else ""
             )
         else:
-            self._indicator.set_icon_full(self.ICON_IDLE, "Waiting")
+            icon = self._icon_path if os.path.exists(self._icon_path) else self.ICON_IDLE
+            self._indicator.set_icon_full(icon, "Waiting")
             self._items["status"].set_label("⏳ Waiting for tablet...")
             self._items["fps"].set_label("")
             self._items["res"].set_label(

@@ -106,3 +106,24 @@ Rebuild and redeploy the app.
 ## Firewall Notes
 
 Make sure port **8080 TCP** is allowed outbound on your PC's firewall for the USB Tethering network adapter. On Windows, you may need to add a Windows Defender Firewall inbound rule for port 8080.
+
+---
+
+## Packaging for Release
+
+### Windows (.exe)
+To create a standalone Windows executable with the application icon:
+1. Install PyInstaller: `pip install pyinstaller`
+2. Run the build: `pyinstaller tetherlink.spec`
+3. The executable will be in the `dist/TetherLink` folder.
+
+### Linux (.deb)
+To package for Debian/Ubuntu (requires `stdeb`):
+1. Install stdeb: `pip install stdeb`
+2. Run: `python setup.py --command-packages=stdeb.command bdist_deb`
+   *(Ensure you have a `setup.py` configured with metadata)*
+
+Alternatively, you can manually layout the files:
+- Executable: `/usr/bin/tetherlink` -> `server/tetherlink_server.py`
+- Icon: `/usr/share/icons/hicolor/512x512/apps/tetherlink.png`
+- Desktop entry: `/usr/share/applications/tetherlink.desktop`

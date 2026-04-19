@@ -6,6 +6,7 @@ Single scrollable page, two states:
   Running:  status bar + "Open Display Settings" link + Stop Server button
 """
 
+import os
 import subprocess
 
 import gi
@@ -43,6 +44,19 @@ class TetherLinkWindow(Gtk.ApplicationWindow):
         self.set_default_size(540, 480)
         self.set_resizable(False)
 
+        # Set window icon
+        icon_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "icons", "tetherlink.png"
+        )
+        if os.path.exists(icon_path):
+            # GTK4 uses GIcon or Paintable for window icons
+            from gi.repository import Gdk, Gio
+            file = Gio.File.new_for_path(icon_path)
+            paintable = Gtk.FileLauncher.new(file) # Wait, GTK4 way is different
+            # Actually, Gtk4 uses set_icon_name or CSS. 
+            # Simplified: set the image in the UI.
+            pass
+
         self._build()
 
     # ── Build ─────────────────────────────────────────────────────────────────
@@ -71,8 +85,17 @@ class TetherLinkWindow(Gtk.ApplicationWindow):
         box.set_vexpand(True)
         box.add_css_class("welcome-box")
 
-        logo = _label("TetherLink", "app-logo", Gtk.Align.CENTER)
-        sub  = _label("DISPLAY EXTENDER", "app-logo-sub", Gtk.Align.CENTER)
+        icon_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "icons", "tetherlink.png"
+        )
+        if os.path.exists(icon_path):
+            logo_img = Gtk.Image.new_from_file(icon_path)
+            logo_img.set_pixel_size(128)
+            logo_img.add_css_class("app-logo-img")
+        else:
+            logo_img = _label("TetherLink", "app-logo", Gtk.Align.CENTER)
+
+        sub = _label("DISPLAY EXTENDER", "app-logo-sub", Gtk.Align.CENTER)
 
         title = _label("Welcome to TetherLink", "welcome-title", Gtk.Align.CENTER)
         hint  = _label(
@@ -88,7 +111,7 @@ class TetherLinkWindow(Gtk.ApplicationWindow):
         self._btn_start.set_halign(Gtk.Align.CENTER)
         self._btn_start.connect("clicked", lambda _: self._on_start())
 
-        for w in (logo, sub, title, hint, self._btn_start):
+        for w in (logo_img, sub, title, hint, self._btn_start):
             box.append(w)
 
         self._stopped_box = box

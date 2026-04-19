@@ -9,3 +9,6 @@ mss==9.0.1
 # venv must be created with system site-packages:
 # /usr/bin/python3 -m venv venv --system-site-packages
 qrcode[pil]==7.4.2
+dbus-python
+PyGObject
+defusedxml

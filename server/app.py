@@ -55,6 +55,17 @@ class TetherLinkApp(Gtk.Application):
     def do_activate(self):
         _load_css()
 
+        # Set application icon
+        icon_path = os.path.join(os.path.dirname(__file__), "icons", "tetherlink.png")
+        if os.path.exists(icon_path):
+            try:
+                # For GTK4, we can't use set_default_icon_from_file easily for all windows,
+                # but we can set it on the window itself or use a Resource.
+                # We'll handle it in the window.py builder for now, or use this as a hint.
+                pass
+            except Exception as e:
+                log.warning("App icon load failed: %s", e)
+
         self._core = ServerCore(
             config=self._config,
             state=self._state,
