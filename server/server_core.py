@@ -563,13 +563,6 @@ class ServerCore:
                            client_name="", fps=0)
         self._log("Server stopped")
 
-    def set_fps(self, fps: int) -> None:
-        """Hot-reload FPS. Takes effect on next frame cycle.
-        CPython GIL makes integer attribute writes atomic — safe to call from GTK thread
-        while _handle_client reads _live_fps from a daemon thread."""
-        self._live_fps = fps
-        self._config.fps = fps
-
     def set_quality(self, quality: int) -> None:
         """Hot-reload JPEG quality via jpegenc element property (no pipeline restart)."""
         self._live_quality = quality
@@ -661,35 +654,6 @@ class ServerCore:
             if detected:
                 self._log(f"Monitor config updated — next stream: {detected[0]}×{detected[1]}")
 
-    def _release_active_stream(self):
-        """Release GStreamer pipeline and disconnect client."""
-        capture = self._capture
-        if capture:
-            self._capture = None
-            try:
-                capture.close()
-            except Exception:
-                pass
-        if self._conn:
-            try:
-                self._conn.shutdown(socket.SHUT_RDWR)
-            except Exception:
-                pass
-
-    def set_monitor_position(self, position: str) -> None:
-        """Update position in config. Applied at next server start."""
-        self._config.monitor_position = position
-
-    def apply_monitor_position(self, position: str) -> None:
-        """Apply new position immediately via xrandr without restarting the stream."""
-        self._config.monitor_position = position
-        if self._display is None:
-            return
-        virtual = _get_virtual_output_name()
-        if virtual:
-            self._apply_position(virtual)
-            self._log(f"Position applied live: device {position} of main")
-
     def _get_primary_output_name(self) -> Optional[str]:
         try:
             result = subprocess.run(["xrandr", "--query"], capture_output=True,
@@ -700,16 +664,6 @@ class ServerCore:
         except Exception:
             pass
         return None
-
-    def restart_with_config(self, config: ServerConfig) -> None:
-        """Stop, apply new config, restart. Used for codec/resolution/port changes."""
-        self._log("Restarting with new configuration…")
-        self._state.update(running=False, connected=False)
-        self.stop()
-        self._config       = config
-        self._live_fps     = config.fps
-        self._live_quality = config.quality
-        self.start()
 
     def _accept_loop(self) -> None:
         while not self._shutdown.is_set():
