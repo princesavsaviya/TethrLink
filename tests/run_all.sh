@@ -2,7 +2,7 @@
 # TetherLink V1 Pre-Release Test Suite
 # Usage: bash tests/run_all.sh
 # Produces: tests/reports/YYYY-MM-DD-HH-MM/report.md
-set -uo pipefail
+set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TIMESTAMP="$(date +%Y-%m-%d-%H-%M)"

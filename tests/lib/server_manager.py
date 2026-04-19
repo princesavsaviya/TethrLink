@@ -35,13 +35,13 @@ def start(port: int, report_dir: str, wayland_display: str = None) -> subprocess
         stderr=log_file,
         env=env,
     )
+    log_file.close()  # Popen duplicated the fd; our handle is no longer needed
 
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         if _port_open(port):
             return proc
         if proc.poll() is not None:
-            log_file.close()
             raise RuntimeError(
                 f"Server exited early (code {proc.returncode}). "
                 f"Check {log_path}"
@@ -49,7 +49,6 @@ def start(port: int, report_dir: str, wayland_display: str = None) -> subprocess
         time.sleep(0.3)
 
     stop(proc)
-    log_file.close()
     raise RuntimeError(
         f"Server did not open port {port} within 15s. Check {log_path}"
     )
