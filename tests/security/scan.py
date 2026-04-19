@@ -2,7 +2,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import xml.etree.ElementTree as ET
 from tests.lib.result import TestResult, passed, failed, warned
 
