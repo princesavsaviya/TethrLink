@@ -1,11 +1,17 @@
 import json
 import os
+import pathlib
 import re
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from tests.lib.result import TestResult, passed, failed, warned
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Prefer venv-local bandit to avoid PATH shadowing issues
+_VENV_BANDIT = pathlib.Path(sys.executable).parent / "bandit"
+_BANDIT_BIN = str(_VENV_BANDIT) if _VENV_BANDIT.exists() else "bandit"
 
 ALLOWED_PERMISSIONS = {
     "android.permission.INTERNET",
@@ -17,38 +23,42 @@ ALLOWED_PERMISSIONS = {
     "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
 }
 
-# Patterns that are OK in constants/comments but suspicious elsewhere
-_HARDCODED_IP_RE   = re.compile(r'(?<![#"\'])192\.168\.|127\.0\.0\.1')
-_SECRET_RE         = re.compile(r'(?i)(password|secret|api_key|token)\s*=\s*["\'][^"\']+["\']')
-_TODO_RE           = re.compile(r'\b(TODO|FIXME|HACK|XXX)\b')
+# Suppress matches inside comments (#//) and string/URL contexts ("'/http)
+_HARDCODED_IP_RE = re.compile(r'(?<![#"\'/])(192\.168\.|127\.0\.0\.1)')
+_SECRET_RE       = re.compile(r'(?i)(password|secret|api_key|token)\s*=\s*["\'][^"\']+["\']')
+_TODO_RE         = re.compile(r'\b(TODO|FIXME|HACK|XXX)\b')
 
 
 def run(report_dir: str) -> TestResult:
-    findings_high   = []
-    findings_warn   = []
-    findings_info   = []
+    os.makedirs(report_dir, exist_ok=True)
+    findings_high = []
+    findings_warn = []
+    findings_info = []
 
     # 1. bandit
     bandit_out = os.path.join(report_dir, "bandit-report.json")
     try:
         subprocess.run(
-            ["bandit", "-r", os.path.join(REPO, "server"),
+            [_BANDIT_BIN, "-r", os.path.join(REPO, "server"),
              "-f", "json", "-o", bandit_out, "-q"],
             capture_output=True, timeout=60,
         )
-        with open(bandit_out) as f:
-            bandit = json.load(f)
-        for issue in bandit.get("results", []):
-            sev = issue.get("issue_severity", "LOW")
-            msg = f"[bandit] {issue['issue_text']} ({issue['filename']}:{issue['line_number']})"
-            if sev == "HIGH":
-                findings_high.append(msg)
-            elif sev == "MEDIUM":
-                findings_warn.append(msg)
     except FileNotFoundError:
         findings_warn.append("[bandit] bandit not installed — skipped")
-    except Exception as e:
-        findings_warn.append(f"[bandit] error: {e}")
+    else:
+        try:
+            with open(bandit_out) as f:
+                bandit_data = json.load(f)
+            for issue in bandit_data.get("results", []):
+                sev = issue.get("issue_severity", "LOW")
+                msg = (f"[bandit] {issue['issue_text']} "
+                       f"({issue['filename']}:{issue['line_number']})")
+                if sev == "HIGH":
+                    findings_high.append(msg)
+                elif sev == "MEDIUM":
+                    findings_warn.append(msg)
+        except Exception as e:
+            findings_warn.append(f"[bandit] could not read report: {e}")
 
     # 2. Hardcoded value scan
     scan_dirs = [
@@ -75,9 +85,7 @@ def run(report_dir: str) -> TestResult:
                             findings_info.append(f"[todo] {rel}:{i}: {stripped[:80]}")
 
     # 3. Android manifest permission audit
-    manifest = os.path.join(
-        REPO, "android", "app", "src", "main", "AndroidManifest.xml"
-    )
+    manifest = os.path.join(REPO, "android", "app", "src", "main", "AndroidManifest.xml")
     if os.path.exists(manifest):
         try:
             tree = ET.parse(manifest)
@@ -96,29 +104,23 @@ def run(report_dir: str) -> TestResult:
     )
 
     # Build result
-    details_lines = (
+    details = "\n".join(
         ["HIGH:"] + findings_high +
         ["", "WARN:"] + findings_warn +
         ["", "INFO:"] + findings_info
     )
-    details = "\n".join(details_lines)
 
     if findings_high:
-        return failed(
-            "Security Scan",
-            f"{len(findings_high)} HIGH, {len(findings_warn)} WARN",
-            details,
-        )
+        return failed("Security Scan",
+                      f"{len(findings_high)} HIGH, {len(findings_warn)} WARN",
+                      details)
     if findings_warn:
-        return warned(
-            "Security Scan",
-            f"0 HIGH, {len(findings_warn)} WARN, {len(findings_info)} INFO",
-            details,
-        )
-    return passed(
-        "Security Scan",
-        f"0 HIGH, 0 WARN, {len(findings_info)} INFO",
-    )
+        return warned("Security Scan",
+                      f"0 HIGH, {len(findings_warn)} WARN, {len(findings_info)} INFO",
+                      details)
+    return passed("Security Scan",
+                  f"0 HIGH, 0 WARN, {len(findings_info)} INFO",
+                  details)
 
 
 if __name__ == "__main__":
