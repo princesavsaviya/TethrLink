@@ -1,14 +1,15 @@
+"""MockClient — simulates a TetherLink Android client for automated tests."""
 import json
 import os
 import socket
 import struct
-import time
 from typing import Optional, Tuple
 
 MAGIC_HELLO = b"TLHELO"
 MAGIC_OK    = b"TLOK__"
 MAGIC_BUSY  = b"TLBUSY"
 DISCOVERY_PORT = 8765
+_MAX_FRAME_BYTES = 50 * 1024 * 1024  # 50 MB sanity cap
 
 
 class MockClient:
@@ -27,11 +28,12 @@ class MockClient:
         timeout: float = 10.0,
     ) -> None:
         """Connect and send TLHELLO handshake."""
+        self.close()  # release any previous socket before reconnecting
         self._sock = socket.create_connection((host, port), timeout=timeout)
         self._sock.settimeout(timeout)
 
         device_id = os.urandom(16)
-        name_bytes = device_name.encode("utf-8")[:64].ljust(64, b"\x00")
+        name_bytes = device_name[:64].encode("utf-8").ljust(64, b"\x00")
         packet = (
             MAGIC_HELLO
             + device_id
@@ -58,6 +60,8 @@ class MockClient:
         """Read one size-prefixed JPEG frame."""
         size_bytes = self._recvall(4)
         size = struct.unpack(">I", size_bytes)[0]
+        if size > _MAX_FRAME_BYTES:
+            raise ValueError(f"Frame size {size} exceeds {_MAX_FRAME_BYTES} byte limit")
         return self._recvall(size)
 
     def close(self) -> None:
@@ -69,6 +73,8 @@ class MockClient:
             self._sock = None
 
     def _recvall(self, n: int) -> bytes:
+        if self._sock is None:
+            raise ConnectionError("Not connected — call connect() first")
         buf = b""
         while len(buf) < n:
             chunk = self._sock.recv(n - len(buf))
@@ -79,18 +85,19 @@ class MockClient:
 
 
 def listen_udp(port: int = DISCOVERY_PORT, timeout: float = 10.0) -> Optional[dict]:
-    """
-    Listen for one UDP broadcast packet. Returns parsed JSON dict or None on timeout.
-    """
+    """Listen for one UDP broadcast packet. Returns parsed JSON dict or None on timeout."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.settimeout(timeout)
     try:
-        sock.bind(("", port))
+        try:
+            sock.bind(("", port))
+        except OSError as e:
+            raise RuntimeError(f"Cannot bind UDP port {port}: {e}") from e
         data, _ = sock.recvfrom(4096)
         return json.loads(data.decode("utf-8"))
-    except (socket.timeout, json.JSONDecodeError, OSError):
+    except (socket.timeout, json.JSONDecodeError):
         return None
     finally:
         sock.close()
