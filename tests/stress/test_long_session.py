@@ -1,5 +1,6 @@
 import csv
 import os
+import socket
 import time
 import psutil
 from tests.lib.mock_client import MockClient
@@ -85,6 +86,3 @@ def run(port: int, report_dir: str, server_pid: int) -> TestResult:
         return failed("Long Session", f"Low FPS: avg {avg_fps:.2f} (min {MIN_FPS})", details)
 
     return passed("Long Session", details.replace("\n", " | "))
-
-
-import socket  # noqa: E402 — needed inside run()
