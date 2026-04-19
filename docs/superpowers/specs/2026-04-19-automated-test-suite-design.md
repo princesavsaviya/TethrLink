@@ -13,7 +13,9 @@
 2. Validate the full server↔Android protocol without a real device
 3. Stress-test reconnect reliability and memory stability
 4. Confirm Android APK builds and passes lint
-5. Produce a single human-readable report: PASS / FAIL / WARN per test
+5. Verify Mutter/GNOME D-Bus API surface compatibility
+6. Test the full stack in an isolated nested Wayland compositor
+7. Produce a single human-readable report: PASS / FAIL / WARN per test
 
 ---
 
@@ -31,6 +33,9 @@
 | APK build | `./gradlew assembleRelease` |
 | Version consistency | Cross-check build.gradle, git tag, server version string |
 | Requirements accuracy | Parse imports vs `requirements.txt` |
+| D-Bus API surface | Introspect live Mutter interface, verify all called methods/signals present |
+| Nested GNOME session | Run full stack inside `gnome-shell --nested` isolated compositor |
+| xrandr-on-Wayland | Assert virtual display moves to expected position after xrandr commands |
 
 ## What Requires Manual Follow-Up (flagged in report)
 
@@ -38,6 +43,9 @@
 - Play Store form, screenshots, privacy policy upload
 - Debian/Ubuntu package creation and install test
 - Visual frame quality check (human eyes)
+- Ubuntu 22.04 VM test (different Mutter/GStreamer versions)
+- Ubuntu 24.04 VM test (GNOME 46)
+- **Note:** Pure X11 sessions are explicitly unsupported — Mutter ScreenCast requires Wayland
 
 ---
 
@@ -63,6 +71,9 @@ tests/
   compatibility/
     test_versions.py          ← Python ≥3.10, GStreamer ≥1.20, PipeWire present
     test_requirements.py      ← all server/ imports resolvable from requirements.txt
+    test_dbus_surface.py      ← introspect live Mutter D-Bus, verify all required APIs present
+    test_nested_session.py    ← start gnome-shell --nested, run server inside it, verify stream
+    test_xrandr_wayland.py    ← create virtual display, run xrandr --pos, assert position changed
   android/
     lint_and_build.sh         ← gradlew lint + gradlew assembleRelease
   reports/                    ← auto-created, one folder per run
@@ -281,6 +292,80 @@ java --version             # for Gradle/Android build
 ```
 
 If any prerequisite missing: print clear error message and exit before starting tests.
+
+---
+
+### `compatibility/test_dbus_surface.py`
+
+Introspects the live Mutter D-Bus interfaces and verifies every method and signal
+TetherLink calls is present with the correct signature.
+
+**Required interface checks:**
+
+| Interface | Method / Signal | Expected signature |
+|---|---|---|
+| `org.gnome.Mutter.ScreenCast` | `CreateSession(a{sv}) → o` | present |
+| `org.gnome.Mutter.ScreenCast.Session` | `RecordVirtual(a{sv}) → o` | present |
+| `org.gnome.Mutter.ScreenCast.Session` | `Start()` | present |
+| `org.gnome.Mutter.ScreenCast.Session` | `Stop()` | present |
+| `org.gnome.Mutter.ScreenCast.Stream` | signal `PipeWireStreamAdded(u)` | present |
+| `org.gnome.Mutter.DisplayConfig` | `GetCurrentState()` | present |
+| `org.gnome.Mutter.DisplayConfig` | signal `MonitorsChanged()` | present |
+
+Also reports:
+- GNOME Shell version (`gdbus call --session --dest org.gnome.Shell ...`)
+- Mutter package version (`dpkg -l mutter-common`)
+- Whether `cursor-mode` property is accepted by `RecordVirtual`
+
+PASS if all required methods/signals are present.  
+WARN if running on an unknown GNOME version (not 42, 44, 46, or 48).
+
+### `compatibility/test_nested_session.py`
+
+Starts an isolated nested Wayland compositor and runs TetherLink's server inside it.
+Tests the full GStreamer + PipeWire + Mutter ScreenCast stack without touching the
+user's real display.
+
+**Steps:**
+1. Launch nested compositor:
+   ```
+   WAYLAND_DISPLAY=wayland-tl-test dbus-run-session -- \
+     gnome-shell --nested --wayland
+   ```
+   Wait up to 20s for `wayland-tl-test` socket to appear in `$XDG_RUNTIME_DIR`.
+
+2. Start TetherLink server headless inside the nested session:
+   ```
+   WAYLAND_DISPLAY=wayland-tl-test python server/tetherlink_server.py \
+     --headless --port 18081
+   ```
+   Wait up to 15s for port 18081 to open.
+
+3. Connect mock client → assert TLOK received → assert at least one JPEG frame received.
+
+4. Gracefully shut down server, then nested session.
+
+PASS if mock client receives TLOK and a valid frame inside the nested session.  
+WARN (not FAIL) if nested session cannot start — some display drivers block nested Wayland.
+
+### `compatibility/test_xrandr_wayland.py`
+
+Verifies that xrandr commands issued by `_apply_display_layout()` actually take
+effect on the virtual display under Wayland/XWayland.
+
+**Steps:**
+1. Query xrandr before server starts — record all connected outputs.
+2. Start server headless (port 18082), connect mock client, wait for TLOK.
+3. Query xrandr — assert a new virtual output appears (name contains "VIRTUAL" or
+   is the only non-primary connected output).
+4. Record virtual output position (x, y) from xrandr output.
+5. Issue `xrandr --output <virtual> --pos 0x0` directly.
+6. Query xrandr again — assert virtual output is now at position (0, 0).
+7. Issue `xrandr --output <virtual> --pos 1920x0`.
+8. Query xrandr — assert virtual output is now at (1920, 0).
+9. Stop server — assert virtual output disappears from xrandr output.
+
+PASS if all position assertions hold and virtual output disappears on server stop.
 
 ---
 
