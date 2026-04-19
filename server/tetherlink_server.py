@@ -36,8 +36,10 @@ VERSION = "0.9.5"
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="TetherLink Server")
-parser.add_argument("--width",      type=int, default=1920)
-parser.add_argument("--height",     type=int, default=1080)
+parser.add_argument("--width",      type=int, default=0,
+                    help="Virtual display width (default: auto-detect from primary monitor)")
+parser.add_argument("--height",     type=int, default=0,
+                    help="Virtual display height (default: auto-detect from primary monitor)")
 parser.add_argument("--fps",        type=int, default=60)
 parser.add_argument("--quality",    type=int, default=90)
 parser.add_argument("--port",       type=int, default=51137,
@@ -50,8 +52,6 @@ parser.add_argument("--h264-width", type=int, default=1280,
                     help="H.264 encode width in pixels (default 1280)")
 args = parser.parse_args()
 
-WIDTH          = args.width
-HEIGHT         = args.height
 FPS            = args.fps
 JPEG_QUALITY   = args.quality
 FRAME_INTERVAL = 1.0 / FPS
@@ -81,7 +81,104 @@ logging.basicConfig(
 log = logging.getLogger("TetherLink")
 
 
-# ── Port binding ──────────────────────────────────────────────────────────────
+# ── Resolution detection ──────────────────────────────────────────────────────
+
+def detect_primary_resolution_mutter(bus) -> tuple[int, int] | None:
+    """
+    Query GNOME Mutter DisplayConfig over D-Bus for the primary monitor's
+    current resolution. Most reliable method on GNOME Wayland.
+    """
+    try:
+        proxy = bus.get_object(
+            "org.gnome.Mutter.DisplayConfig",
+            "/org/gnome/Mutter/DisplayConfig"
+        )
+        iface = dbus.Interface(proxy, "org.gnome.Mutter.DisplayConfig")
+        _serial, monitors, logical_monitors, _props = iface.GetCurrentState()
+
+        # Find the primary logical monitor
+        for lm in logical_monitors:
+            # lm layout: (x, y, scale, transform, is_primary, monitors, props)
+            is_primary = bool(lm[4])
+            if not is_primary:
+                continue
+            monitor_connector = lm[5][0][0]
+            for monitor in monitors:
+                if monitor[0][0] != monitor_connector:
+                    continue
+                for mode in monitor[1]:
+                    # mode layout: (id, width, height, refresh, preferred_scale,
+                    #               supported_scales, props)
+                    if mode[6].get("is-current", False):
+                        w, h = int(mode[1]), int(mode[2])
+                        log.info("Detected primary monitor: %dx%d (Mutter DisplayConfig)", w, h)
+                        return w, h
+    except Exception as e:
+        log.debug("Mutter DisplayConfig detection failed: %s", e)
+    return None
+
+
+def detect_primary_resolution_xrandr() -> tuple[int, int] | None:
+    """
+    Fallback: parse xrandr output for the primary (or first connected)
+    display resolution. Works in XWayland environments.
+    """
+    try:
+        result = subprocess.run(
+            ["xrandr", "--query"], capture_output=True, text=True, timeout=3
+        )
+        lines = result.stdout.splitlines()
+        # Prefer line with "connected primary", fall back to first "connected"
+        candidates = [l for l in lines if " connected primary" in l]
+        if not candidates:
+            candidates = [l for l in lines if " connected" in l]
+        for line in candidates:
+            for part in line.split():
+                if "x" in part and "+" in part:
+                    try:
+                        w, h = part.split("+")[0].split("x")
+                        log.info("Detected primary monitor: %dx%d (xrandr)", int(w), int(h))
+                        return int(w), int(h)
+                    except ValueError:
+                        continue
+    except Exception as e:
+        log.debug("xrandr detection failed: %s", e)
+    return None
+
+
+FALLBACK_WIDTH  = 1920
+FALLBACK_HEIGHT = 1080
+
+def resolve_resolution(bus, requested_w: int, requested_h: int) -> tuple[int, int]:
+    """
+    Return the display resolution to use for the virtual monitor.
+    Priority:
+      1. --width / --height CLI args (both must be non-zero to override)
+      2. Mutter DisplayConfig D-Bus query
+      3. xrandr fallback
+      4. Hardcoded fallback (1920x1080)
+    """
+    if requested_w > 0 and requested_h > 0:
+        log.info("Resolution: %dx%d (from CLI args)", requested_w, requested_h)
+        return requested_w, requested_h
+
+    detected = detect_primary_resolution_mutter(bus)
+    if detected:
+        return detected
+
+    detected = detect_primary_resolution_xrandr()
+    if detected:
+        return detected
+
+    log.warning(
+        "Could not detect display resolution — "
+        "falling back to %dx%d. Use --width/--height to override.",
+        FALLBACK_WIDTH, FALLBACK_HEIGHT
+    )
+    return FALLBACK_WIDTH, FALLBACK_HEIGHT
+
+
+
 
 def bind_server_socket(preferred_port: int) -> tuple[socket.socket, int]:
     """
@@ -205,13 +302,15 @@ def cleanup_orphaned_sessions(bus):
 
 
 class MutterVirtualDisplay:
-    def __init__(self, width: int, height: int):
+    def __init__(self, width: int, height: int, bus=None):
         self.width    = width
         self.height   = height
         self._node_id = None
         self._error   = None
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
-        self._bus  = dbus.SessionBus()
+        # Reuse the bus passed in from run_server (already initialised for
+        # resolution detection) — avoids creating a second DBus main loop.
+        self._bus  = bus or dbus.SessionBus()
         self._loop = GLib.MainLoop()
         cleanup_orphaned_sessions(self._bus)
         sc_obj    = self._bus.get_object(MUTTER_BUS, MUTTER_PATH)
@@ -292,7 +391,8 @@ class PipeWireCapture:
                 # Caps filter forces PipeWire to negotiate the exact resolution
                 # with Mutter. Without this, pipewiresrc defaults to 1280x720
                 # regardless of the virtual display's actual size.
-                f"! video/x-raw,width={self.width},height={self.height},max-framerate={FPS}/1 "
+                f"! video/x-raw,width={self.width},height={self.height},"
+                f"max-framerate={FPS}/1 "
                 f"! videoconvert "
                 f"! video/x-raw,format=BGR "
                 f"! appsink name=sink emit-signals=true "
@@ -410,11 +510,17 @@ def stream_to_client(conn: socket.socket, addr: tuple,
 def run_server():
     codec = detect_codec()
 
+    # Set up D-Bus before resolution detection — Mutter uses the same bus
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SessionBus()
+
+    WIDTH, HEIGHT = resolve_resolution(bus, args.width, args.height)
+
     log.info("TetherLink v%s — %s encoding %dx%d @ %d FPS",
              VERSION, "H.264" if codec == CODEC_H264 else "JPEG",
              WIDTH, HEIGHT, FPS)
 
-    display = MutterVirtualDisplay(WIDTH, HEIGHT)
+    display = MutterVirtualDisplay(WIDTH, HEIGHT, bus)
     try:
         node_id = display.setup()
     except Exception as e:

@@ -15,6 +15,7 @@ Packet format (JSON):
 
 import json
 import logging
+import platform
 import socket
 import threading
 import time
@@ -48,6 +49,8 @@ class DiscoveryBroadcaster:
         payload = {
             "app":        "TetherLink",
             "name":       self._name,
+            "hostname":   self._name,
+            "system":     f"Linux {platform.release()} ({platform.machine()})",
             "port":       self._port,
             "resolution": self._resolution,
             "version":    VERSION,

@@ -31,3 +31,7 @@ Thumbs.db
 # ── Temp / Runtime ───────────────────────────────────────────────────────────
 /tmp/tetherlink_frame.png
 *.log
+
+# ── Git worktrees ─────────────────────────────────────────────────────────────
+.worktrees/
+.superpowers/
