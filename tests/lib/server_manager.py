@@ -7,7 +7,7 @@ import time
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SERVER_SCRIPT = os.path.join(REPO_ROOT, "server", "tetherlink_server.py")
+SERVER_SCRIPT = os.path.join(REPO_ROOT, "server", "run_headless.py")
 VENV_PYTHON = os.path.join(REPO_ROOT, "venv", "bin", "python3")
 PYTHON = VENV_PYTHON if os.path.exists(VENV_PYTHON) else sys.executable
 
