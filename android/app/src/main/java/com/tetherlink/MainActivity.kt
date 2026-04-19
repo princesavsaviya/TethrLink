@@ -1,8 +1,6 @@
 package com.tetherlink
 
-import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.Bundle
 import android.provider.Settings
@@ -12,11 +10,8 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.ImageButton
 import android.widget.LinearLayout
-import android.widget.ProgressBar
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -29,7 +24,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import android.content.SharedPreferences
 import android.util.Base64
 import org.json.JSONObject
 import java.io.DataInputStream
@@ -39,29 +33,25 @@ import java.net.InetSocketAddress
 import java.net.Socket
 
 /**
- * TetherLink – Main Activity (v0.9.5)
+ * TetherLink — Main Activity
  *
- * Port handling:
- *  - Server port is read from UDP discovery broadcast — never hardcoded
- *  - Falls back to DEFAULT_SERVER_PORT only if broadcast omits port field
- *  - DISCOVERY_PORT matches server/discovery.py BROADCAST_PORT constant
+ * State machine:
+ *   NO_USB → NO_TETHERING → SCANNING → SERVER_FOUND → STREAMING
  */
 class MainActivity : AppCompatActivity() {
 
     // ── Network constants ─────────────────────────────────────────────────────
-    // DEFAULT_SERVER_PORT is a fallback only — the real port always comes
-    // from the UDP discovery broadcast. Keep in sync with server default.
-    private val DEFAULT_SERVER_PORT     = 51137
-    private val DISCOVERY_PORT          = 8765
+    private val DEFAULT_SERVER_PORT   = 51137
+    private val DISCOVERY_PORT        = 8765
 
     // ── Timeout constants ─────────────────────────────────────────────────────
-    private val CONNECT_TIMEOUT_MS      = 5000
-    private val STREAM_TIMEOUT_MS       = 3000
-    private val SURFACE_TIMEOUT_MS      = 5000L
-    private val SILENT_FRAME_LIMIT_MS   = 3000L
-    private val PRE_STREAM_DELAY_MS     = 500L
-    private val AUTO_RECONNECT_DELAY_MS = 2000L
-    private val READ_BUF_SIZE           = 1024 * 1024   // 1 MB
+    private val CONNECT_TIMEOUT_MS    = 5000
+    private val STREAM_TIMEOUT_MS     = 3000
+    private val SURFACE_TIMEOUT_MS    = 5000L
+    private val SILENT_FRAME_LIMIT_MS = 3000L
+    private val PRE_STREAM_DELAY_MS   = 500L
+    private val AUTO_RECONNECT_DELAY  = 2000L
+    private val READ_BUF_SIZE         = 1024 * 1024
 
     // ── Protocol magic bytes ──────────────────────────────────────────────────
     private val MAGIC_HELLO = "TLHELO".toByteArray()
@@ -71,74 +61,102 @@ class MainActivity : AppCompatActivity() {
     // ── Device identity ───────────────────────────────────────────────────────
     private val DEVICE_ID: ByteArray by lazy { getOrCreateDeviceId() }
 
-    // ── Prefs keys ────────────────────────────────────────────────────────────
-    private val PREFS_NAME    = "tetherlink"
-    private val PREF_ONBOARDED = "onboarded"
+    // ── Screen 2: No Tethering ────────────────────────────────────────────────
+    private lateinit var screenNoTethering: View
+    private lateinit var openTetheringBtn:  Button
 
-    // ── Views ─────────────────────────────────────────────────────────────────
-    private lateinit var surfaceView:        SurfaceView
-    private lateinit var fpsPill:            LinearLayout
-    private lateinit var overlayFps:         TextView
-    private lateinit var qualityDot:         View
-    private lateinit var streamOverlay:      FrameLayout
-    private lateinit var overlayServerName:  TextView
-    private lateinit var overlayFpsLarge:    TextView
-    private lateinit var overlayResolution:  TextView
-    private lateinit var overlayCodec:       TextView
-    private lateinit var disconnectBtn:      Button
-    private lateinit var discoveryLayout:    View
-    private lateinit var tetheringBanner:    LinearLayout
-    private lateinit var tetheringEnableBtn: Button
-    private lateinit var progressBar:        ProgressBar
-    private lateinit var statusText:         TextView
-    private lateinit var serverCard:         LinearLayout
-    private lateinit var serverNameText:     TextView
-    private lateinit var serverInfoText:     TextView
+    // ── Screen 3: Scanning ────────────────────────────────────────────────────
+    private lateinit var screenScanning: View
+    private lateinit var scanLogText:    TextView
+
+    // ── Screen 4: Server Found ────────────────────────────────────────────────
+    private lateinit var screenServerFound:  View
+    private lateinit var serverHostnameText: TextView
+    private lateinit var serverIpText:       TextView
+    private lateinit var serverSystemText:   TextView
+    private lateinit var serverSummaryText:  TextView
     private lateinit var connectButton:      Button
-    private lateinit var onboardingLayout:   View
 
-    private lateinit var prefs: SharedPreferences
-    private val ioScope   = CoroutineScope(Dispatchers.IO)
-    private var streamJob: Job? = null
-    private var listenJob: Job? = null
+    // ── Screen 5: Streaming ───────────────────────────────────────────────────
+    private lateinit var surfaceView:       SurfaceView
+    private lateinit var fpsPill:           LinearLayout
+    private lateinit var overlayFps:        TextView
+    private lateinit var qualityDot:        View
+    private lateinit var streamOverlay:     FrameLayout
+    private lateinit var overlayServerName: TextView
+    private lateinit var overlayFpsLarge:   TextView
+    private lateinit var overlayResolution: TextView
+    private lateinit var overlayCodec:      TextView
+    private lateinit var disconnectBtn:     Button
 
-    // ── Discovered server state ───────────────────────────────────────────────
-    private var discoveredIp:   String? = null
-    private var discoveredPort: Int     = DEFAULT_SERVER_PORT
-    private var discoveredName: String  = "TetherLink Server"
-    private var discoveredRes:  String  = ""
+    // ── Discovered server ─────────────────────────────────────────────────────
+    private var discoveredIp:       String? = null
+    private var discoveredPort:     Int     = DEFAULT_SERVER_PORT
+    private var discoveredName:     String  = "TetherLink Server"
+    private var discoveredHostname: String  = ""
+    private var discoveredSystem:   String  = ""
+    private var discoveredRes:      String  = ""
+
+    // ── Coroutines ────────────────────────────────────────────────────────────
+    private val ioScope        = CoroutineScope(Dispatchers.IO)
+    private var streamJob:     Job? = null
+    private var listenJob:     Job? = null
+    private var stateJob:      Job? = null
+    private var discoverySocket: DatagramSocket? = null
 
     private var frameCount  = 0
     private var fpsLastTime = System.currentTimeMillis()
+
+    // ── Log lines for scanning screen ─────────────────────────────────────────
+    private val logLines = mutableListOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        surfaceView        = findViewById(R.id.surfaceView)
-        fpsPill            = findViewById(R.id.fpsPill)
-        overlayFps         = findViewById(R.id.overlayFps)
-        qualityDot         = findViewById(R.id.qualityDot)
-        streamOverlay      = findViewById(R.id.streamOverlay)
-        overlayServerName  = findViewById(R.id.overlayServerName)
-        overlayFpsLarge    = findViewById(R.id.overlayFpsLarge)
-        overlayResolution  = findViewById(R.id.overlayResolution)
-        overlayCodec       = findViewById(R.id.overlayCodec)
-        disconnectBtn      = findViewById(R.id.disconnectBtn)
-        discoveryLayout    = findViewById(R.id.discoveryLayout)
-        tetheringBanner    = findViewById(R.id.tetheringBanner)
-        tetheringEnableBtn = findViewById(R.id.tetheringEnableBtn)
-        progressBar        = findViewById(R.id.progressBar)
-        statusText         = findViewById(R.id.statusText)
-        serverCard         = findViewById(R.id.serverCard)
-        serverNameText     = findViewById(R.id.serverNameText)
-        serverInfoText     = findViewById(R.id.serverInfoText)
-        connectButton      = findViewById(R.id.connectButton)
-        onboardingLayout   = findViewById(R.id.onboardingLayout)
+        // Screen 2
+        screenNoTethering = findViewById(R.id.screenNoTethering)
+        openTetheringBtn  = findViewById(R.id.openTetheringBtn)
 
-        prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // Screen 3
+        screenScanning = findViewById(R.id.screenScanning)
+        scanLogText    = findViewById(R.id.scanLogText)
+
+        // Screen 4
+        screenServerFound  = findViewById(R.id.screenServerFound)
+        serverHostnameText = findViewById(R.id.serverHostnameText)
+        serverIpText       = findViewById(R.id.serverIpText)
+        serverSystemText   = findViewById(R.id.serverSystemText)
+        serverSummaryText  = findViewById(R.id.serverSummaryText)
+        connectButton      = findViewById(R.id.connectButton)
+
+        // Screen 5
+        surfaceView       = findViewById(R.id.surfaceView)
+        fpsPill           = findViewById(R.id.fpsPill)
+        overlayFps        = findViewById(R.id.overlayFps)
+        qualityDot        = findViewById(R.id.qualityDot)
+        streamOverlay     = findViewById(R.id.streamOverlay)
+        overlayServerName = findViewById(R.id.overlayServerName)
+        overlayFpsLarge   = findViewById(R.id.overlayFpsLarge)
+        overlayResolution = findViewById(R.id.overlayResolution)
+        overlayCodec      = findViewById(R.id.overlayCodec)
+        disconnectBtn     = findViewById(R.id.disconnectBtn)
+
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableImmersiveMode()
+
+        openTetheringBtn.setOnClickListener {
+            try {
+                startActivity(Intent("android.settings.TETHER_SETTINGS"))
+            } catch (_: Exception) {
+                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+            }
+        }
+
+        connectButton.setOnClickListener {
+            val ip = discoveredIp ?: return@setOnClickListener
+            startStreaming(ip, discoveredPort)
+        }
 
         surfaceView.setOnClickListener {
             streamOverlay.visibility = View.VISIBLE
@@ -148,58 +166,46 @@ class MainActivity : AppCompatActivity() {
         }
         disconnectBtn.setOnClickListener {
             streamJob?.cancel()
-            showDiscoveryScreen()
-        }
-        connectButton.setOnClickListener {
-            val ip = discoveredIp ?: return@setOnClickListener
-            startStreaming(ip, discoveredPort)
-        }
-        tetheringEnableBtn.setOnClickListener {
-            try {
-                startActivity(Intent("android.settings.TETHER_SETTINGS"))
-            } catch (_: Exception) {
-                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
-            }
-        }
-        findViewById<ImageButton>(R.id.settingsBtn).setOnClickListener {
-            startActivity(Intent(this, SettingsActivity::class.java))
+            startStateLoop()
         }
 
-        if (!prefs.getBoolean(PREF_ONBOARDED, false)) {
-            onboardingLayout.visibility = View.VISIBLE
-        } else {
-            discoveryLayout.visibility = View.VISIBLE
-            startDiscoveryListener()
-        }
-
-        findViewById<Button>(R.id.onboardingDoneBtn).setOnClickListener {
-            prefs.edit().putBoolean(PREF_ONBOARDED, true).apply()
-            onboardingLayout.visibility = View.GONE
-            discoveryLayout.visibility  = View.VISIBLE
-            startDiscoveryListener()
-        }
+        startStateLoop()
     }
 
     override fun onResume() {
         super.onResume()
-        if (discoveryLayout.visibility == View.VISIBLE) {
-            tetheringBanner.visibility = if (isUsbTetherActive()) View.GONE else View.VISIBLE
+        if (streamJob?.isActive != true) startStateLoop()
+    }
+
+    // ── State loop ────────────────────────────────────────────────────────────
+
+    private fun startStateLoop() {
+        stateJob?.cancel()
+        listenJob?.cancel()
+        stateJob = ioScope.launch {
+            while (true) {
+                if (isUsbTetherActive()) {
+                    showScreen(3)
+                    startDiscoveryListener()
+                    return@launch
+                } else {
+                    showScreen(2)
+                    delay(1000)
+                }
+            }
         }
     }
 
-    // ── Device ID ─────────────────────────────────────────────────────────────
-
-    private fun getOrCreateDeviceId(): ByteArray {
-        val prefs = getSharedPreferences("tetherlink_device", MODE_PRIVATE)
-        val saved = prefs.getString("device_id", null)
-        if (saved != null) return Base64.decode(saved, Base64.DEFAULT)
-        val id = java.util.UUID.randomUUID().toString().replace("-", "")
-            .substring(0, 16).toByteArray()
-        prefs.edit().putString("device_id", Base64.encodeToString(id, Base64.DEFAULT)).apply()
-        return id
+    private suspend fun showScreen(n: Int) = withContext(Dispatchers.Main) {
+        screenNoTethering.visibility = if (n == 2) View.VISIBLE else View.GONE
+        screenScanning.visibility    = if (n == 3) View.VISIBLE else View.GONE
+        screenServerFound.visibility = if (n == 4) View.VISIBLE else View.GONE
+        surfaceView.visibility       = if (n == 5) View.VISIBLE else View.GONE
+        fpsPill.visibility           = View.GONE
+        streamOverlay.visibility     = View.GONE
     }
 
-    // ── USB tethering detection ───────────────────────────────────────────────
+    // ── USB / tethering detection ─────────────────────────────────────────────
 
     private fun isUsbTetherActive(): Boolean {
         return try {
@@ -207,14 +213,38 @@ class MainActivity : AppCompatActivity() {
                 ?.asSequence()
                 ?.any { iface ->
                     iface.isUp && !iface.isLoopback &&
-                            (iface.name.startsWith("rndis") ||
-                                    iface.name.startsWith("usb")   ||
-                                    iface.name.startsWith("ncm"))  &&
-                            iface.inetAddresses.asSequence()
-                                .filterIsInstance<java.net.Inet4Address>()
-                                .any { !it.isLoopbackAddress }
+                    (iface.name.startsWith("rndis") ||
+                     iface.name.startsWith("usb")   ||
+                     iface.name.startsWith("ncm"))  &&
+                    iface.inetAddresses.asSequence()
+                        .filterIsInstance<java.net.Inet4Address>()
+                        .any { !it.isLoopbackAddress }
                 } ?: false
         } catch (_: Exception) { false }
+    }
+
+    private fun isUsbTetherIp(ip: String): Boolean {
+        return try {
+            java.net.NetworkInterface.getNetworkInterfaces()
+                ?.asSequence()
+                ?.filter { iface ->
+                    !iface.isLoopback && iface.isUp &&
+                    !iface.name.startsWith("wlan") &&
+                    !iface.name.startsWith("p2p")
+                }
+                ?.flatMap { iface ->
+                    iface.inetAddresses.asSequence()
+                        .filterIsInstance<java.net.Inet4Address>()
+                        .filter { !it.isLoopbackAddress }
+                        .map { it.hostAddress }
+                }
+                ?.any { addr ->
+                    val p1 = addr?.split(".") ?: return@any false
+                    val p2 = ip.split(".")
+                    p1.size == 4 && p2.size == 4 &&
+                    p1[0] == p2[0] && p1[1] == p2[1] && p1[2] == p2[2]
+                } ?: false
+        } catch (_: Exception) { true }
     }
 
     // ── Immersive mode ────────────────────────────────────────────────────────
@@ -235,126 +265,143 @@ class MainActivity : AppCompatActivity() {
 
     // ── Discovery ─────────────────────────────────────────────────────────────
 
-    private fun isUsbTetherIp(ip: String): Boolean {
-        return try {
-            java.net.NetworkInterface.getNetworkInterfaces()
-                ?.asSequence()
-                ?.filter { iface ->
-                    !iface.isLoopback && iface.isUp &&
-                            !iface.name.startsWith("wlan") &&
-                            !iface.name.startsWith("p2p")
-                }
-                ?.flatMap { iface ->
-                    iface.inetAddresses.asSequence()
-                        .filterIsInstance<java.net.Inet4Address>()
-                        .filter { !it.isLoopbackAddress }
-                        .map { it.hostAddress }
-                }
-                ?.any { addr ->
-                    val parts1 = addr?.split(".") ?: return@any false
-                    val parts2 = ip.split(".")
-                    parts1.size == 4 && parts2.size == 4 &&
-                            parts1[0] == parts2[0] &&
-                            parts1[1] == parts2[1] &&
-                            parts1[2] == parts2[2]
-                } ?: false
-        } catch (_: Exception) { true }
+    private fun appendLog(line: String) {
+        logLines.add(line)
+        if (logLines.size > 6) logLines.removeAt(0)
+        runOnUiThread {
+            scanLogText.text = logLines.joinToString("\n") { "$ $it" }
+        }
     }
 
     private fun startDiscoveryListener(autoConnectIp: String? = null,
                                        autoConnectPort: Int = DEFAULT_SERVER_PORT) {
         listenJob?.cancel()
+        // Force-close any previous socket so port 8765 is freed immediately.
+        // socket.receive() is a blocking call that ignores coroutine cancellation,
+        // so the only way to unblock it is to close the socket from outside.
+        discoverySocket?.close()
+        discoverySocket = null
+
+        // Reset so the first broadcast after reconnect always triggers Screen 4.
+        if (autoConnectIp == null) {
+            discoveredIp   = null
+            discoveredPort = DEFAULT_SERVER_PORT
+        }
+
+        logLines.clear()
+        appendLog("USB tethering active...")
+        appendLog("Starting broadcast listener...")
+        appendLog("Listening on UDP port $DISCOVERY_PORT...")
+        appendLog("Waiting for TetherLink broadcast...")
+
         listenJob = ioScope.launch {
-            setStatus("Searching for server…")
-            showProgress(true)
-
-            withContext(Dispatchers.Main) {
-                tetheringBanner.visibility = if (isUsbTetherActive()) View.GONE else View.VISIBLE
-            }
-
             var pendingIp   = autoConnectIp
             var pendingPort = autoConnectPort
 
+            // USB watchdog: if tethering drops while scanning or on server-found
+            // screen, cancel discovery and return to home immediately.
+            val watchdog = launch {
+                while (true) {
+                    delay(1500)
+                    if (!isUsbTetherActive()) {
+                        discoverySocket?.close()
+                        startStateLoop()
+                        return@launch
+                    }
+                }
+            }
+
             try {
-                val socket = DatagramSocket(DISCOVERY_PORT)
-                socket.broadcast = true
+                val socket = DatagramSocket(null).also {
+                    it.reuseAddress = true
+                    it.bind(InetSocketAddress(DISCOVERY_PORT))
+                    it.broadcast = true
+                }
+                discoverySocket = socket
                 val buf    = ByteArray(1024)
                 val packet = DatagramPacket(buf, buf.size)
 
-                while (listenJob?.isActive == true && streamJob?.isActive != true) {
-                    socket.receive(packet)
+                while (streamJob?.isActive != true) {
+                    try {
+                        socket.receive(packet)
+                    } catch (_: java.net.SocketException) {
+                        // Socket was closed by watchdog or startDiscoveryListener
+                        // re-entry — exit the loop cleanly.
+                        break
+                    }
                     val json = JSONObject(
                         String(packet.data, 0, packet.length, Charsets.UTF_8)
                     )
                     if (json.optString("app") != "TetherLink") continue
 
-                    val ip   = packet.address.hostAddress ?: continue
-                    val name = json.optString("name", "TetherLink Server")
-                    val res  = json.optString("resolution", "")
-                    // Single source of truth — port comes from the broadcast.
-                    // DEFAULT_SERVER_PORT fallback should never be hit in practice.
-                    val port = json.optInt("port", DEFAULT_SERVER_PORT)
+                    val ip       = packet.address.hostAddress ?: continue
+                    val name     = json.optString("name", "TetherLink Server")
+                    val hostname = json.optString("hostname", name)
+                    val system   = json.optString("system", "Linux")
+                    val res      = json.optString("resolution", "")
+                    val port     = json.optInt("port", DEFAULT_SERVER_PORT)
 
                     if (!isUsbTetherIp(ip)) continue
+
+                    appendLog("Server found: $hostname ($ip)")
 
                     if (pendingIp != null && ip == pendingIp) {
                         pendingIp = null
                         withContext(Dispatchers.Main) {
-                            discoveredIp   = ip
-                            discoveredPort = port
-                            discoveredName = name
-                            discoveredRes  = res
+                            discoveredIp       = ip
+                            discoveredPort     = port
+                            discoveredName     = name
+                            discoveredHostname = hostname
+                            discoveredSystem   = system
+                            discoveredRes      = res
                         }
-                        setStatus("Reconnecting to $name…")
                         delay(PRE_STREAM_DELAY_MS)
                         startStreaming(ip, port)
                         break
                     }
 
                     if (ip != discoveredIp || port != discoveredPort) {
-                        discoveredIp   = ip
-                        discoveredPort = port
-                        discoveredName = name
-                        discoveredRes  = res
+                        discoveredIp       = ip
+                        discoveredPort     = port
+                        discoveredName     = name
+                        discoveredHostname = hostname
+                        discoveredSystem   = system
+                        discoveredRes      = res
                         withContext(Dispatchers.Main) {
-                            showProgress(false)
-                            serverNameText.text = name
-                            serverInfoText.text = buildString {
+                            serverHostnameText.text = hostname
+                            serverIpText.text       = ip
+                            serverSystemText.text   = system
+                            serverSummaryText.text  = buildString {
+                                if (res.isNotEmpty()) append("$res · ")
                                 append(ip)
-                                if (res.isNotEmpty()) append("  ·  $res")
                             }
-                            serverCard.visibility    = View.VISIBLE
-                            connectButton.visibility = View.VISIBLE
-                            statusText.text          = ""
+                            showScreen(4)
                         }
                     }
                 }
-                socket.close()
             } catch (e: Exception) {
-                if (listenJob?.isActive == true) setStatus("Discovery error: ${e.message}")
+                if (!e.message.orEmpty().contains("Socket closed") &&
+                    listenJob?.isActive == true) {
+                    appendLog("Discovery error: ${e.message}")
+                }
+            } finally {
+                watchdog.cancel()
+                discoverySocket?.close()
+                discoverySocket = null
             }
         }
     }
 
     // ── Streaming ─────────────────────────────────────────────────────────────
 
-    private fun startStreaming(ip: String, port: Int) {
+    private fun startStreaming(ip: String, port: Int, busyRetries: Int = 5) {
         listenJob?.cancel()
         streamJob = ioScope.launch {
-            withContext(Dispatchers.Main) {
-                discoveryLayout.visibility  = View.GONE
-                onboardingLayout.visibility = View.GONE
-                surfaceView.visibility      = View.VISIBLE
-                streamOverlay.visibility    = View.GONE
-                fpsPill.visibility          = View.GONE
-            }
-
             try {
                 val socket = Socket()
                 socket.connect(InetSocketAddress(ip, port), CONNECT_TIMEOUT_MS)
                 val input = DataInputStream(socket.getInputStream())
 
-                // ── Handshake ─────────────────────────────────────────────────
                 val deviceName = android.os.Build.MODEL.toByteArray()
                 val screenW    = windowManager.currentWindowMetrics.bounds.width()
                 val screenH    = windowManager.currentWindowMetrics.bounds.height()
@@ -367,12 +414,32 @@ class MainActivity : AppCompatActivity() {
                 val responseHeader = ByteArray(6)
                 input.readFully(responseHeader)
                 when {
-                    responseHeader.contentEquals(MAGIC_BUSY) ->
-                        throw Exception("Server is busy — another device is connected")
+                    responseHeader.contentEquals(MAGIC_BUSY) -> {
+                        socket.close()
+                        if (busyRetries > 0) {
+                            // Server is finishing teardown of the previous session.
+                            // Wait 2s and try again — the lock will be free by then.
+                            appendLog("Server busy, retrying… ($busyRetries attempts left)")
+                            delay(2000)
+                            startStreaming(ip, port, busyRetries - 1)
+                        } else {
+                            throw Exception("Server busy after all retries")
+                        }
+                        return@launch
+                    }
                     !responseHeader.contentEquals(MAGIC_OK) ->
-                        throw Exception("Unexpected response from server")
+                        throw Exception("Unexpected server response")
                 }
-                // ─────────────────────────────────────────────────────────────
+
+                // Only switch to the stream screen after handshake succeeds.
+                // Showing Screen 5 before TLOK causes a black-screen flash on every
+                // TLBUSY retry and makes the UI loop visibly between screens.
+                withContext(Dispatchers.Main) {
+                    showScreen(5)
+                    surfaceView.visibility   = View.VISIBLE
+                    streamOverlay.visibility = View.GONE
+                    fpsPill.visibility       = View.GONE
+                }
 
                 val streamW   = input.readInt()
                 val streamH   = input.readInt()
@@ -388,7 +455,6 @@ class MainActivity : AppCompatActivity() {
                     fpsPill.visibility     = View.VISIBLE
                 }
 
-                showToast("Connected to $discoveredName — ${streamW}×${streamH} $codecName")
                 socket.soTimeout = STREAM_TIMEOUT_MS
 
                 val surfaceReady = CompletableDeferred<android.view.Surface>()
@@ -423,7 +489,7 @@ class MainActivity : AppCompatActivity() {
                     onBitmap = { bmp -> latestBitmap.set(bmp) }
                 )
 
-                val renderJob = kotlinx.coroutines.GlobalScope.launch(Dispatchers.Main) {
+                val renderJob = ioScope.launch(Dispatchers.Main) {
                     while (streamJob?.isActive == true) {
                         val bmp = latestBitmap.getAndSet(null)
                         if (bmp != null) drawFrame(bmp)
@@ -458,29 +524,17 @@ class MainActivity : AppCompatActivity() {
                 socket.close()
 
             } catch (e: Exception) {
-                showDiscoveryScreen()
-                setStatus("Disconnected — reconnecting…")
-                delay(AUTO_RECONNECT_DELAY_MS)
-                startDiscoveryListener(autoConnectIp = ip, autoConnectPort = port)
+                // Auto-reconnect: if tethering is still up, go straight to scanning
+                // (skip the state loop so we never flash the "No Tethering" screen).
+                // If tethering went down, fall back to the normal state loop.
+                if (isUsbTetherActive()) {
+                    showScreen(3)
+                    startDiscoveryListener(autoConnectIp = ip, autoConnectPort = port)
+                } else {
+                    startStateLoop()
+                }
             }
         }
-    }
-
-    private fun showDiscoveryScreen() {
-        runOnUiThread {
-            surfaceView.visibility      = View.GONE
-            streamOverlay.visibility    = View.GONE
-            fpsPill.visibility          = View.GONE
-            discoveryLayout.visibility  = View.VISIBLE
-            serverCard.visibility       = View.GONE
-            connectButton.visibility    = View.GONE
-            serverNameText.text         = ""
-            serverInfoText.text         = ""
-            discoveredIp                = null
-            discoveredPort              = DEFAULT_SERVER_PORT
-            tetheringBanner.visibility  = if (isUsbTetherActive()) View.GONE else View.VISIBLE
-        }
-        startDiscoveryListener()
     }
 
     // ── Rendering ─────────────────────────────────────────────────────────────
@@ -490,9 +544,7 @@ class MainActivity : AppCompatActivity() {
         val canvas: Canvas = holder.lockCanvas() ?: return
         try {
             val dst = android.graphics.RectF(
-                0f, 0f,
-                canvas.width.toFloat(),
-                canvas.height.toFloat()
+                0f, 0f, canvas.width.toFloat(), canvas.height.toFloat()
             )
             canvas.drawColor(android.graphics.Color.BLACK)
             canvas.drawBitmap(bitmap, null, dst, null)
@@ -523,22 +575,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // ── Device ID ─────────────────────────────────────────────────────────────
 
-    private suspend fun setStatus(msg: String) = withContext(Dispatchers.Main) {
-        statusText.text = msg
-    }
-
-    private suspend fun showProgress(show: Boolean) = withContext(Dispatchers.Main) {
-        progressBar.visibility = if (show) View.VISIBLE else View.GONE
-    }
-
-    private suspend fun showToast(msg: String) = withContext(Dispatchers.Main) {
-        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+    private fun getOrCreateDeviceId(): ByteArray {
+        val prefs = getSharedPreferences("tetherlink_device", MODE_PRIVATE)
+        val saved = prefs.getString("device_id", null)
+        if (saved != null) return Base64.decode(saved, Base64.DEFAULT)
+        val id = java.util.UUID.randomUUID().toString().replace("-", "")
+            .substring(0, 16).toByteArray()
+        prefs.edit().putString("device_id", Base64.encodeToString(id, Base64.DEFAULT)).apply()
+        return id
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        stateJob?.cancel()
         streamJob?.cancel()
         listenJob?.cancel()
         ioScope.cancel()
