@@ -18,7 +18,7 @@ def run(port: int, report_dir: str) -> TestResult:
             return failed("Handshake", f"Expected TLOK, got: {status}")
         details.append(f"TLOK received: w={info[0]} h={info[1]} codec={info[2]}")
 
-        # Frame arrives within 10s
+        # Give a fresh 10s budget for the first frame regardless of how long read_response took
         c._sock.settimeout(10.0)
         frame = c.read_frame()
         if not frame:

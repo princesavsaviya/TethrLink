@@ -8,7 +8,10 @@ EXPECTED_FIELDS = {"name", "hostname", "resolution", "version"}   # nice-to-have
 
 
 def run(report_dir: str) -> TestResult:
-    packet = listen_udp(timeout=12.0)
+    try:
+        packet = listen_udp(timeout=12.0)
+    except RuntimeError as e:
+        return failed("UDP Discovery", f"Cannot bind UDP port: {e}")
 
     if packet is None:
         return failed(

@@ -1,5 +1,4 @@
 import socket
-import threading
 import time
 from tests.lib.mock_client import MockClient, MAGIC_BUSY
 from tests.lib.result import TestResult, passed, failed
