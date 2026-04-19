@@ -8,6 +8,7 @@ HOST = "127.0.0.1"
 
 def run(port: int, report_dir: str) -> TestResult:
     details = []
+    time.sleep(0.5)   # ensure any previous test's lock is released
 
     # Client A: connect and hold
     a = MockClient()

@@ -38,12 +38,13 @@ def _send_and_drain(port: int, payload: bytes) -> None:
 
 
 def _valid_connect_ok(port: int) -> bool:
+    """Server is alive if it responds with either TLOK (free) or TLBUSY (occupied)."""
     c = MockClient()
     try:
         c.connect(HOST, port, "SurvivalCheck", 1920, 1080)
         status, _ = c.read_response()
         c.close()
-        return status == "ok"
+        return status in ("ok", "busy")
     except Exception:
         c.close()
         return False

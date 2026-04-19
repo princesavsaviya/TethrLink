@@ -68,10 +68,11 @@ class DiscoveryBroadcaster:
 
         while self._running:
             packet = self._make_packet()
-            try:
-                sock.sendto(packet, (BROADCAST_ADDRESS, BROADCAST_PORT))
-            except Exception as e:
-                log.debug("Broadcast error: %s", e)
+            for dest in (BROADCAST_ADDRESS, "127.255.255.255"):
+                try:
+                    sock.sendto(packet, (dest, BROADCAST_PORT))
+                except Exception as e:
+                    log.debug("Broadcast error to %s: %s", dest, e)
             time.sleep(BROADCAST_INTERVAL)
 
         sock.close()
