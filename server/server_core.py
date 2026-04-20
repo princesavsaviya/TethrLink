@@ -63,7 +63,7 @@ FALLBACK_HEIGHT = 1080
 
 @dataclass
 class ServerConfig:
-    fps: int = 60
+    fps: int = 45
     quality: int = 90
     codec: int = CODEC_JPEG
     bitrate: int = 3000
