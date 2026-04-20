@@ -7,6 +7,8 @@ setup(
     long_description="TetherLink turns an Android tablet into a wired second monitor for your Linux PC using USB tethering.",
     long_description_content_type="text/plain",
     author="Prince Savsaviya",
+    author_email="princesavsaviya.learning@gmail.com",
+    url="https://github.com/princesavsaviya/TetherLink",
     packages=find_packages(),
     include_package_data=True,
     install_requires=[

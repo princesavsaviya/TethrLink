@@ -32,6 +32,11 @@ Thumbs.db
 /tmp/tetherlink_frame.png
 *.log
 
+# ── Release artifacts ────────────────────────────────────────────────────────
+android/app/release/
+deb_dist/
+TetherLink-*.tar.gz
+
 # ── Git worktrees ─────────────────────────────────────────────────────────────
 .worktrees/
 .superpowers/
