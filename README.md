@@ -182,3 +182,11 @@ TetherLink/
 ## Author
 
 **Prince Savsaviya** — [princesavsaviya.learning@gmail.com](mailto:princesavsaviya.learning@gmail.com)
+
+---
+
+## License
+
+GNU General Public License v3.0 — see [LICENSE](LICENSE) for details.
+
+TetherLink is free to use, modify, and distribute under GPL v3. If you distribute a modified version, you must release the source under the same license.

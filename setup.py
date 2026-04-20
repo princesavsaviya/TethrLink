@@ -9,6 +9,7 @@ setup(
     author="Prince Savsaviya",
     author_email="princesavsaviya.learning@gmail.com",
     url="https://github.com/princesavsaviya/TetherLink",
+    license="GPL-3.0-or-later",
     packages=find_packages(),
     include_package_data=True,
     install_requires=[
