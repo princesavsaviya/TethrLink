@@ -1063,13 +1063,8 @@
       <h2 class="subscribe-title">Get notified when we ship.</h2>
       <p class="subscribe-sub">Touch input, audio forwarding, Windows support — subscribe to be first to know.</p>
 
-      <!--
-        SETUP: Sign up at https://formspree.io, create a new form,
-        and replace YOUR_FORM_ID below with your actual form ID.
-        e.g. action="https://formspree.io/f/xabc1234"
-      -->
       <form class="subscribe-form" id="subscribeForm"
-            action="https://formspree.io/f/YOUR_FORM_ID"
+            action="https://formspree.io/f/mvzdqqzo"
             method="POST">
         <input type="email" name="email" class="subscribe-input"
                placeholder="your@email.com" required autocomplete="email">
@@ -1142,10 +1137,13 @@
           msg.className = 'subscribe-msg success';
           form.reset();
         } else {
-          throw new Error('server error');
+          const data = await res.json().catch(() => ({}));
+          const reason = data?.errors?.map(e => e.message).join(', ') || `Error ${res.status}`;
+          msg.textContent = `✗ ${reason}`;
+          msg.className = 'subscribe-msg error';
         }
-      } catch {
-        msg.textContent = '✗ Something went wrong. Try emailing us directly.';
+      } catch (err) {
+        msg.textContent = `✗ ${err.message}`;
         msg.className = 'subscribe-msg error';
       } finally {
         btn.disabled = false;
