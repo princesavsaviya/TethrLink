@@ -12,6 +12,6 @@ if [ -x /usr/bin/gtk-update-icon-cache ]; then
 fi
 
 # Set correct permissions for the launcher
-chmod +x /usr/bin/tetherlink
+chmod +x /usr/bin/tethrlink
 
 exit 0

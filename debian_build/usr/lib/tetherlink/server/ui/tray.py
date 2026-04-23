@@ -1,5 +1,5 @@
 """
-TetherLink — System Tray Icon
+TethrLink — System Tray Icon
 Shows connection status, FPS, connected client IP.
 Runs alongside the main server in a separate thread.
 """
@@ -35,7 +35,7 @@ class TrayState:
 
 # ── Tray icon ─────────────────────────────────────────────────────────────────
 
-class TetherLinkTray:
+class TethrLinkTray:
 
     ICON_ACTIVE   = "network-transmit"
     ICON_IDLE     = "network-offline"
@@ -48,17 +48,17 @@ class TetherLinkTray:
         self._items    = {}
 
         self._icon_path = os.path.join(
-            os.path.dirname(__file__), "assets", "tetherlink.png"
+            os.path.dirname(__file__), "assets", "tethrlink.png"
         )
         icon_name = self._icon_path if os.path.exists(self._icon_path) else self.ICON_IDLE
 
         self._indicator = AyatanaAppIndicator3.Indicator.new(
-            "tetherlink",
+            "tethrlink",
             icon_name,
             AyatanaAppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
         self._indicator.set_status(AyatanaAppIndicator3.IndicatorStatus.ACTIVE)
-        self._indicator.set_title("TetherLink")
+        self._indicator.set_title("TethrLink")
 
         self._build_menu()
         state.on_change(self._refresh)
@@ -67,7 +67,7 @@ class TetherLinkTray:
         menu = Gtk.Menu()
 
         # Title (non-clickable)
-        title = Gtk.MenuItem(label="TetherLink")
+        title = Gtk.MenuItem(label="TethrLink")
         title.set_sensitive(False)
         menu.append(title)
         menu.append(Gtk.SeparatorMenuItem())
@@ -93,7 +93,7 @@ class TetherLinkTray:
         menu.append(Gtk.SeparatorMenuItem())
 
         # Quit
-        quit_item = Gtk.MenuItem(label="Quit TetherLink")
+        quit_item = Gtk.MenuItem(label="Quit TethrLink")
         quit_item.connect("activate", lambda _: self._on_quit())
         menu.append(quit_item)
 
@@ -129,9 +129,9 @@ class TetherLinkTray:
         GLib.idle_add(Gtk.main_quit)
 
 
-def start_tray(state: TrayState, on_quit) -> TetherLinkTray:
+def start_tray(state: TrayState, on_quit) -> TethrLinkTray:
     """Start the tray icon in a background thread. Returns the tray object."""
-    tray = TetherLinkTray(state, on_quit)
+    tray = TethrLinkTray(state, on_quit)
     thread = threading.Thread(target=tray.run, daemon=True)
     thread.start()
     return tray

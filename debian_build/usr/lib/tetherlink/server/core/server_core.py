@@ -1,7 +1,7 @@
 """
-TetherLink Server Core — v0.9.5
+TethrLink Server Core — v0.9.5
 Importable server logic. No argparse, no __main__.
-Used by both app.py (GUI) and the CLI shim (tetherlink_server.py).
+Used by both app.py (GUI) and the CLI shim (tethrlink_server.py).
 """
 
 import logging
@@ -25,7 +25,7 @@ from .discovery import DiscoveryBroadcaster
 # Must be called once before any D-Bus objects are created.
 dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-log = logging.getLogger("TetherLink")
+log = logging.getLogger("TethrLink")
 
 VERSION = "0.9.5"
 
@@ -527,7 +527,7 @@ class X11MssCapture:
 
 class ServerCore:
     """
-    Manages the full TetherLink server lifecycle.
+    Manages the full TethrLink server lifecycle.
     All public methods are thread-safe.
     on_log: callable(str) — called with log messages (use GLib.idle_add in UI context)
     """

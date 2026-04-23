@@ -1,1 +1,1 @@
-# TetherLink Server Package
+# TethrLink Server Package

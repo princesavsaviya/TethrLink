@@ -1,9 +1,9 @@
 #!/bin/bash
-# TetherLink .deb Builder Script
+# TethrLink .deb Builder Script
 
 set -e
 
-APP_NAME="tetherlink"
+APP_NAME="tethrlink"
 VERSION="1.0.0"
 BUILD_DIR="debian_build"
 DEB_FILE="${APP_NAME}_${VERSION}_all.deb"
@@ -12,7 +12,7 @@ echo "🚀 Building ${DEB_FILE}..."
 
 # Bundle missing Python dependencies
 echo "📦 Bundling Python dependencies..."
-pip install --target ${BUILD_DIR}/usr/lib/tetherlink mss qrcode[pil] --upgrade
+pip install --target ${BUILD_DIR}/usr/lib/tethrlink mss qrcode[pil] --upgrade
 
 # Ensure permissions are correct for DEBIAN scripts
 chmod 755 ${BUILD_DIR}/DEBIAN/postinst

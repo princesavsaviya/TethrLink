@@ -1,11 +1,11 @@
 """
-TetherLink — UDP Discovery Broadcaster
+TethrLink — UDP Discovery Broadcaster
 Announces the server on the local network every 2 seconds.
 Android app listens for these broadcasts to find the server automatically.
 
 Packet format (JSON):
   {
-    "app":        "TetherLink",
+    "app":        "TethrLink",
     "name":       "Prince's OMEN",
     "port":       51137,
     "resolution": "1920x1080",
@@ -20,7 +20,7 @@ import socket
 import threading
 import time
 
-log = logging.getLogger("TetherLink.Discovery")
+log = logging.getLogger("TethrLink.Discovery")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 BROADCAST_PORT     = 8765
@@ -47,7 +47,7 @@ class DiscoveryBroadcaster:
 
     def _make_packet(self) -> bytes:
         payload = {
-            "app":        "TetherLink",
+            "app":        "TethrLink",
             "name":       self._name,
             "hostname":   self._name,
             "system":     f"Linux {platform.release()} ({platform.machine()})",

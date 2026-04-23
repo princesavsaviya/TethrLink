@@ -1,10 +1,11 @@
 """
-TetherLink Server Core — v0.9.5
+TethrLink Server Core — v0.9.5
 Importable server logic. No argparse, no __main__.
-Used by both app.py (GUI) and the CLI shim (tetherlink_server.py).
+Used by both app.py (GUI) and the CLI shim (tethrlink_server.py).
 """
 
 import logging
+import os
 import socket
 import struct
 import subprocess
@@ -25,7 +26,7 @@ from .discovery import DiscoveryBroadcaster
 # Must be called once before any D-Bus objects are created.
 dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
-log = logging.getLogger("TetherLink")
+log = logging.getLogger("TethrLink")
 
 VERSION = "0.9.5"
 
@@ -308,6 +309,127 @@ class MutterVirtualDisplay:
                 pass
 
 
+# ── X11 virtual display ───────────────────────────────────────────────────────
+
+class X11VirtualDisplay:
+    """
+    Tries to provide a virtual second monitor on X11.
+    Strategy 1: xrandr VIRTUAL output (requires driver support).
+    Strategy 2: Xvfb on a spare display number.
+    setup() returns a monitor dict on success, None on failure.
+    The dict may include a 'display' key (str) for Xvfb.
+    """
+
+    def __init__(self, width: int, height: int):
+        self._width  = width
+        self._height = height
+        self._strategy: str = ""
+        self._xrandr_output: str = ""
+        self._xrandr_mode:   str = ""
+        self._xvfb_proc: Optional[subprocess.Popen] = None
+        self._xvfb_display: str = ""
+
+    def setup(self) -> Optional[dict]:
+        mon = self._try_xrandr_virtual()
+        if mon is not None:
+            return mon
+        return self._try_xvfb()
+
+    def _try_xrandr_virtual(self) -> Optional[dict]:
+        try:
+            result = subprocess.run(["xrandr", "--query"],
+                                    capture_output=True, text=True, timeout=5)
+            virtual = None
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                if parts and parts[0].startswith("VIRTUAL") and "disconnected" in line:
+                    virtual = parts[0]
+                    break
+            if not virtual:
+                return None
+
+            mode_name = f"TL_{self._width}x{self._height}"
+            cvt = subprocess.run(
+                ["cvt", str(self._width), str(self._height), "60"],
+                capture_output=True, text=True, timeout=5,
+            )
+            modeline_parts = None
+            for line in cvt.stdout.splitlines():
+                if line.startswith("Modeline"):
+                    modeline_parts = line.split()[2:]
+                    break
+            if not modeline_parts:
+                return None
+
+            subprocess.run(["xrandr", "--newmode", mode_name] + modeline_parts,
+                           check=True, capture_output=True, timeout=5)
+            subprocess.run(["xrandr", "--addmode", virtual, mode_name],
+                           check=True, capture_output=True, timeout=5)
+            primary_w = (detect_primary_resolution_xrandr() or (1920, 1080))[0]
+            subprocess.run(
+                ["xrandr", "--output", virtual, "--mode", mode_name,
+                 "--right-of", "eDP-1"],
+                check=True, capture_output=True, timeout=5,
+            )
+            self._strategy      = "xrandr"
+            self._xrandr_output = virtual
+            self._xrandr_mode   = mode_name
+            log.info("X11 virtual display: xrandr %s %dx%d", virtual,
+                     self._width, self._height)
+            return {"left": primary_w, "top": 0,
+                    "width": self._width, "height": self._height}
+        except Exception as e:
+            log.debug("xrandr virtual output failed: %s", e)
+            return None
+
+    def _try_xvfb(self) -> Optional[dict]:
+        for num in range(99, 120):
+            if not os.path.exists(f"/tmp/.X11-unix/X{num}"):
+                display_num = num
+                break
+        else:
+            return None
+        try:
+            self._xvfb_proc = subprocess.Popen(
+                ["Xvfb", f":{display_num}",
+                 "-screen", "0", f"{self._width}x{self._height}x24",
+                 "-ac", "+extension", "GLX", "+render", "-noreset"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            time.sleep(0.8)
+            if self._xvfb_proc.poll() is not None:
+                return None
+            self._strategy     = "xvfb"
+            self._xvfb_display = f":{display_num}"
+            log.info("X11 virtual display: Xvfb %s %dx%d",
+                     self._xvfb_display, self._width, self._height)
+            return {"left": 0, "top": 0,
+                    "width": self._width, "height": self._height,
+                    "display": self._xvfb_display}
+        except Exception as e:
+            log.debug("Xvfb start failed: %s", e)
+            return None
+
+    def close(self):
+        if self._strategy == "xrandr":
+            for cmd in [
+                ["xrandr", "--output", self._xrandr_output, "--off"],
+                ["xrandr", "--delmode", self._xrandr_output, self._xrandr_mode],
+                ["xrandr", "--rmmode", self._xrandr_mode],
+            ]:
+                try:
+                    subprocess.run(cmd, capture_output=True, timeout=5)
+                except Exception:
+                    pass
+        elif self._strategy == "xvfb" and self._xvfb_proc:
+            try:
+                self._xvfb_proc.terminate()
+                self._xvfb_proc.wait(timeout=3)
+            except Exception:
+                pass
+            self._xvfb_proc = None
+
+
 # ── GStreamer capture ─────────────────────────────────────────────────────────
 
 class PipeWireCapture:
@@ -457,44 +579,75 @@ class PipeWireCapture:
         self._loop.quit()
 
 
-# ── X11 capture (mss) ────────────────────────────────────────────────────────
+# ── X11 capture (mss + XFixes cursor overlay) ─────────────────────────────────
 
 class X11MssCapture:
     """
-    Screen capture for X11 sessions using mss.
-    Grabs the primary monitor at the requested FPS and produces JPEG frames.
-    Interface mirrors PipeWireCapture.get_frame() so the streaming loop is
-    session-type agnostic.
+    Screen capture for X11 / Xvfb sessions using mss.
+    Produces JPEG frames with cursor composited via mss's built-in XFixes support.
+    Interface mirrors PipeWireCapture so the streaming loop is agnostic.
+
+    monitor: mss monitor dict (left/top/width/height). May include a 'display'
+             key (str) when targeting an Xvfb virtual display.
+
+    mss stores its X display handle in thread-local storage, so the mss instance
+    must be created and used in the same thread — that is done inside _capture_loop.
     """
+
     def __init__(self, width: int, height: int, fps: int, quality: int = 90,
-                 on_error: Optional[Callable] = None):
-        import mss
-        self.width   = width
-        self.height  = height
-        self._fps    = fps
+                 on_error: Optional[Callable] = None,
+                 monitor: Optional[dict] = None):
+        self.width    = width
+        self.height   = height
+        self._fps     = fps
         self._quality = quality
         self._on_error = on_error
+        self._monitor_cfg = monitor  # may include 'display' key for Xvfb
         self._frame: Optional[bytes] = None
         self._lock  = threading.Lock()
         self._stop  = threading.Event()
-        self._mss   = mss.mss()
-        # Use the first monitor (index 1 = primary in mss)
-        self._monitor = self._mss.monitors[1]
-        log.info("X11 capture: mss monitor %s", self._monitor)
+        self._mss   = None           # created inside capture thread
+
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
 
     def _capture_loop(self) -> None:
+        import mss as _mss_lib
         from PIL import Image
         from io import BytesIO
+
+        xvfb_display = (self._monitor_cfg or {}).get("display")
+        _saved = None
+        if xvfb_display:
+            _saved = os.environ.get("DISPLAY")
+            os.environ["DISPLAY"] = xvfb_display
+
+        try:
+            self._mss = _mss_lib.mss()
+            if self._monitor_cfg:
+                monitor = {k: v for k, v in self._monitor_cfg.items()
+                           if k != "display"}
+            else:
+                monitor = self._mss.monitors[1]
+            log.info("X11 capture: monitor %s", monitor)
+        except Exception as e:
+            log.warning("X11 mss init failed: %s", e)
+            if self._on_error:
+                self._on_error()
+            return
+        finally:
+            if _saved is not None:
+                os.environ["DISPLAY"] = _saved
+
         interval = 1.0 / self._fps
         try:
             while not self._stop.is_set():
                 t = time.monotonic()
-                img = self._mss.grab(self._monitor)
+                img = self._mss.grab(monitor)
                 pil = Image.frombytes("RGB", img.size, img.bgra, "raw", "BGRX")
                 if pil.size != (self.width, self.height):
                     pil = pil.resize((self.width, self.height), Image.LANCZOS)
+                pil = self._overlay_cursor(pil, monitor)
                 buf = BytesIO()
                 pil.save(buf, format="JPEG", quality=self._quality)
                 with self._lock:
@@ -507,12 +660,57 @@ class X11MssCapture:
             log.warning("X11 capture error: %s", e)
             if self._on_error:
                 self._on_error()
+        finally:
+            if self._mss:
+                try:
+                    self._mss.close()
+                except Exception:
+                    pass
+
+    def _overlay_cursor(self, pil_img: "Image", monitor: dict) -> "Image":
+        """Composite the hardware cursor onto pil_img using mss XFixes support."""
+        try:
+            from PIL import Image as _PILImage
+            cs = self._mss._cursor_impl()  # mss built-in XFixes cursor capture
+
+            mon_left = monitor.get("left", 0)
+            mon_top  = monitor.get("top",  0)
+            mon_w    = monitor["width"]
+            mon_h    = monitor["height"]
+
+            # cs.left/top already account for the hotspot offset
+            paste_x = cs.left - mon_left
+            paste_y = cs.top  - mon_top
+
+            # mss returns cursor pixels in BGRA format; convert to RGBA for PIL
+            bgra = cs.raw
+            rgba = bytearray(len(bgra))
+            rgba[0::4] = bgra[2::4]  # R ← B slot
+            rgba[1::4] = bgra[1::4]  # G
+            rgba[2::4] = bgra[0::4]  # B ← R slot
+            rgba[3::4] = bgra[3::4]  # A
+            cursor_pil = _PILImage.frombytes("RGBA", (cs.width, cs.height), bytes(rgba))
+
+            if pil_img.size != (mon_w, mon_h):
+                sx = pil_img.width  / mon_w
+                sy = pil_img.height / mon_h
+                paste_x = int(paste_x * sx)
+                paste_y = int(paste_y * sy)
+                cursor_pil = cursor_pil.resize(
+                    (max(1, int(cs.width * sx)), max(1, int(cs.height * sy))),
+                    _PILImage.LANCZOS,
+                )
+
+            pil_img.paste(cursor_pil, (paste_x, paste_y), cursor_pil)
+            return pil_img
+        except Exception:
+            return pil_img
 
     def set_quality(self, quality: int) -> None:
         self._quality = quality
 
     def set_orientation(self, portrait: bool) -> None:
-        pass  # orientation flip not supported on X11 mss path
+        pass
 
     def get_frame(self):
         with self._lock:
@@ -520,14 +718,14 @@ class X11MssCapture:
 
     def close(self) -> None:
         self._stop.set()
-        self._mss.close()
+        self._thread.join(timeout=2.0)  # wait for mss to close before caller tears down display
 
 
 # ── ServerCore ────────────────────────────────────────────────────────────────
 
 class ServerCore:
     """
-    Manages the full TetherLink server lifecycle.
+    Manages the full TethrLink server lifecycle.
     All public methods are thread-safe.
     on_log: callable(str) — called with log messages (use GLib.idle_add in UI context)
     """
@@ -765,9 +963,21 @@ class ServerCore:
                     on_error=_on_capture_error,
                 )
             else:
-                # X11: capture primary screen directly with mss (JPEG only)
-                self._log("X11 session — capturing primary screen with mss. "
-                          "Arrange your windows, then connect the device.")
+                # X11: try xrandr VIRTUAL output only (no Xvfb — it starts blank
+                # and its termination triggers a fatal Xlib I/O error).
+                # If no VIRTUAL output is available, mirror the primary screen.
+                x11_virt = X11VirtualDisplay(width, height)
+                mon = x11_virt._try_xrandr_virtual()
+                if mon is not None:
+                    display = x11_virt
+                    self._log(f"X11 virtual display ready ({width}×{height}) — "
+                              "drag windows to the second monitor")
+                else:
+                    x11_virt.close()
+                    display = None
+                    self._log("X11: mirroring primary screen (cursor overlaid automatically)")
+                    self._log("Arrange your windows, then connect the device.")
+
                 def _on_capture_error_x11():
                     self._log("X11 capture error — stream stopped")
                     if self._conn:
@@ -781,6 +991,7 @@ class ServerCore:
                     fps=self._live_fps,
                     quality=self._live_quality,
                     on_error=_on_capture_error_x11,
+                    monitor=mon,
                 )
                 codec = CODEC_JPEG  # mss path always produces JPEG
 

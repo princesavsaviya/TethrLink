@@ -1,6 +1,6 @@
 """
-TetherLink — GTK4 Application Entry Point  (V1)
-Wires together ServerCore and TetherLinkWindow.
+TethrLink — GTK4 Application Entry Point  (V1)
+Wires together ServerCore and TethrLinkWindow.
 """
 
 import os
@@ -9,11 +9,14 @@ import logging
 import threading
 
 import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gio", "2.0")
+from gi.repository import Gtk, Gio, GLib
 from server.core.server_core import ServerCore, ServerConfig, ServerState
-from server.ui.window import TetherLinkWindow
+from server.ui.window import TethrLinkWindow
 
 
-log = logging.getLogger("TetherLink.App")
+log = logging.getLogger("TethrLink.App")
 
 
 def _load_css():
@@ -36,11 +39,11 @@ def _load_css():
         )
 
 
-class TetherLinkApp(Gtk.Application):
+class TethrLinkApp(Gtk.Application):
 
     def __init__(self):
         super().__init__(
-            application_id="com.tetherlink.server",
+            application_id="com.tethrlink.server",
             flags=Gio.ApplicationFlags.FLAGS_NONE,
         )
         self._config     = ServerConfig()
@@ -56,7 +59,7 @@ class TetherLinkApp(Gtk.Application):
         _load_css()
 
         # Set application icon
-        icon_path = os.path.join(os.path.dirname(__file__), "icons", "tetherlink.png")
+        icon_path = os.path.join(os.path.dirname(__file__), "icons", "tethrlink.png")
         if os.path.exists(icon_path):
             try:
                 # For GTK4, we can't use set_default_icon_from_file easily for all windows,
@@ -73,7 +76,7 @@ class TetherLinkApp(Gtk.Application):
             on_external_stop=self._on_external_stop,
         )
 
-        self._window = TetherLinkWindow(
+        self._window = TethrLinkWindow(
             app=self,
             on_start=self._on_start,
             on_stop=self._on_stop,
@@ -142,7 +145,7 @@ def main():
         level=logging.INFO,
         format="%(asctime)s  %(name)-28s  %(levelname)s  %(message)s",
     )
-    app = TetherLinkApp()
+    app = TethrLinkApp()
     sys.exit(app.run(sys.argv))
 
 
