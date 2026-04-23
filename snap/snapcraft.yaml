@@ -25,10 +25,26 @@ icon: debian_build/usr/share/icons/hicolor/512x512/apps/tethrlink.png
 license: GPL-3.0
 contact: princesavsaviya2023.learning@gmail.com
 source-code: https://github.com/princesavsaviya/TethrLink
-website: https://github.com/princesavsaviya/TethrLink
+website: https://princesavsaviya.github.io/TethrLink
 
 grade: stable
-confinement: strict
+confinement: classic
+
+slots:
+  tethrlink-dbus:
+    interface: dbus
+    bus: session
+    name: com.tethrlink.server
+
+plugs:
+  mutter-screencast:
+    interface: dbus
+    bus: session
+    name: org.gnome.Mutter.ScreenCast
+  mutter-display-config:
+    interface: dbus
+    bus: session
+    name: org.gnome.Mutter.DisplayConfig
 
 apps:
   tethrlink:
@@ -39,8 +55,14 @@ apps:
       - network
       - network-bind
       - network-observe
+      - mutter-screencast
+      - mutter-display-config
+      - pipewire
+    slots:
+      - tethrlink-dbus
     environment:
       PYTHONPATH: $SNAP/usr/lib/tetherlink
+      PIPEWIRE_RUNTIME_DIR: /run/user/1000
 
 parts:
   copy-debian-build:
@@ -50,8 +72,3 @@ parts:
       - python3
       - python3-gi
       - python3-gi-cairo
-      - gstreamer1.0-tools
-      - gstreamer1.0-plugins-base
-      - gstreamer1.0-plugins-good
-      - gstreamer1.0-plugins-bad
-      - gstreamer1.0-x

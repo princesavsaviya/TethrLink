@@ -723,8 +723,7 @@ class ServerCore:
                 except Exception as e:
                     self._log(f"Virtual display failed: {e}")
                     display.close()
-                    self._client_lock.release()
-                    conn.close()
+                    display = None  # prevent double-close in finally
                     return
 
                 self._log("Virtual display ready — arrange windows using System Settings > Displays")
