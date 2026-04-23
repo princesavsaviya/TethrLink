@@ -1,0 +1,57 @@
+name: tethrlink
+title: TethrLink
+base: core24
+version: '1.0.0'
+summary: Turn your Android tablet into a wired second monitor for Linux.
+description: |
+  TethrLink streams a virtual display from your Linux PC to an Android tablet 
+  over a direct USB tethering connection — no Wi-Fi, no cloud, no latency spikes. 
+  
+  The PC captures a dedicated virtual screen via the Mutter ScreenCast D-Bus API, 
+  encodes frames with GStreamer (JPEG or H.264), and pushes them over a private 
+  USB subnet. The Android client decodes and renders them fullscreen in real time.
+  
+  Features:
+  • Zero-config transport — USB tethering, no router needed
+  • Independent virtual display
+  • Dual codec — software JPEG or GStreamer H.264
+  • GTK4 + Libadwaita dark desktop UI
+  • UDP auto-discovery
+
+# The icon goes here at the root level!
+icon: debian_build/usr/share/icons/hicolor/512x512/apps/tethrlink.png
+
+# Added Metadata from your README to remove warnings
+license: GPL-3.0
+contact: princesavsaviya2023.learning@gmail.com
+source-code: https://github.com/princesavsaviya/TethrLink
+website: https://github.com/princesavsaviya/TethrLink
+
+grade: stable
+confinement: strict
+
+apps:
+  tethrlink:
+    command: usr/bin/tethrlink
+    desktop: usr/share/applications/tethrlink.desktop
+    extensions: [gnome]
+    plugs:
+      - network
+      - network-bind
+      - network-observe
+    environment:
+      PYTHONPATH: $SNAP/usr/lib/tetherlink
+
+parts:
+  copy-debian-build:
+    plugin: dump
+    source: debian_build/
+    stage-packages:
+      - python3
+      - python3-gi
+      - python3-gi-cairo
+      - gstreamer1.0-tools
+      - gstreamer1.0-plugins-base
+      - gstreamer1.0-plugins-good
+      - gstreamer1.0-plugins-bad
+      - gstreamer1.0-x

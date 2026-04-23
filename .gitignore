@@ -38,6 +38,13 @@ deb_dist/
 TethrLink-*.tar.gz
 tethrlink_*.deb
 tethrlink_*.zip
+tethrlink_*.snap
+
+# ── Snapcraft build directories ───────────────────────────────────────────────
+parts/
+prime/
+stage/
+.craft/
 
 
 # ── Git worktrees ─────────────────────────────────────────────────────────────
