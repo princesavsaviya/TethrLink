@@ -28,7 +28,7 @@ source-code: https://github.com/princesavsaviya/TethrLink
 website: https://princesavsaviya.github.io/TethrLink
 
 grade: stable
-confinement: classic
+confinement: strict
 
 slots:
   tethrlink-dbus:
@@ -61,7 +61,7 @@ apps:
     slots:
       - tethrlink-dbus
     environment:
-      PYTHONPATH: $SNAP/usr/lib/tetherlink
+      PYTHONPATH: $SNAP/usr/lib/tethrlink
       PIPEWIRE_RUNTIME_DIR: /run/user/1000
 
 parts:

@@ -249,13 +249,16 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
     def _open_display_settings(self, _btn):
-        try:
-            subprocess.Popen(["gnome-control-center", "display"],
-                             start_new_session=True)
-        except FileNotFoundError:
-            # Fallback for non-GNOME desktops
+        # Inside snap, /usr/bin is the snap overlay — host binaries live at
+        # /var/lib/snapd/hostfs/usr/bin (snap) or /usr/bin (native install)
+        for cmd in [
+            ["/var/lib/snapd/hostfs/usr/bin/gnome-control-center", "display"],
+            ["/usr/bin/gnome-control-center", "display"],
+            ["/var/lib/snapd/hostfs/usr/bin/xfce4-display-settings"],
+            ["/usr/bin/xfce4-display-settings"],
+        ]:
             try:
-                subprocess.Popen(["xfce4-display-settings"],
-                                 start_new_session=True)
+                subprocess.Popen(cmd, start_new_session=True)
+                return
             except FileNotFoundError:
                 pass

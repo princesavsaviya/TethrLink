@@ -1,5 +1,5 @@
 #!/bin/bash
 # Use $SNAP prefix when running inside a snap, fall back to /usr for .deb installs
-_LIB="${SNAP:+$SNAP}/usr/lib/tetherlink"
+_LIB="${SNAP:+$SNAP}/usr/lib/tethrlink"
 export PYTHONPATH="${_LIB}:${PYTHONPATH}"
 exec python3 -m server.app.main "$@"
