@@ -1,0 +1,14 @@
+# Python packages (install with: pip install -r requirements.txt)
+Pillow==10.1.0
+mss==9.0.1
+
+# System packages required (install with apt):
+# sudo apt install python3-gi python3-dbus gstreamer1.0-pipewire
+# sudo apt install gir1.2-gstreamer-1.0 gir1.2-gtk-3.0
+#
+# venv must be created with system site-packages:
+# /usr/bin/python3 -m venv venv --system-site-packages
+qrcode[pil]==7.4.2
+dbus-python
+PyGObject
+defusedxml

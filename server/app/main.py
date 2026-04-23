@@ -9,19 +9,18 @@ import logging
 import threading
 
 import gi
-gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, Gio, GLib
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from server.server_core import ServerCore, ServerConfig, ServerState
+from server.core.server_core import ServerCore, ServerConfig, ServerState
 from server.ui.window import TetherLinkWindow
+
 
 log = logging.getLogger("TetherLink.App")
 
 
 def _load_css():
-    css_path = os.path.join(os.path.dirname(__file__), "ui", "style.css")
+    # Look for style.css in server/ui/
+    # If main is in server/app, then server/ui is ../ui/style.css
+    base_dir = os.path.dirname(os.path.dirname(__file__))
+    css_path = os.path.join(base_dir, "ui", "style.css")
     provider = Gtk.CssProvider()
     try:
         provider.load_from_path(css_path)
@@ -49,6 +48,7 @@ class TetherLinkApp(Gtk.Application):
         self._core       = None
         self._window     = None
         self._restarting = False
+
 
         self._state.on_change(self._on_state_changed)
 
@@ -81,6 +81,16 @@ class TetherLinkApp(Gtk.Application):
         self._window.set_server_running(False)
         self._window.present()
 
+    def _on_app_shutdown(self, *_):
+        self._on_quit_app()
+
+    def _on_quit_app(self):
+        if self._core:
+            self._core.stop()
+            self._core = None
+        self.quit()
+
+
     # ── State callback ────────────────────────────────────────────────────────
 
     def _on_state_changed(self):
@@ -92,7 +102,7 @@ class TetherLinkApp(Gtk.Application):
             self._restarting = False
             self._window.set_server_running(True)
         elif self._restarting:
-            self._window.set_server_running(False, restarting=True)
+            self._start_server()
         else:
             self._window.set_server_running(False)
 

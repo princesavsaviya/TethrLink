@@ -1,0 +1,167 @@
+/* TetherLink GTK4 Dark Theme */
+
+window {
+    background-color: #0d1117;
+    color: #e6edf3;
+}
+
+/* ── Scrolled container ─────────────────────────────────────────────────────── */
+
+.main-scroll {
+    background-color: #0d1117;
+}
+
+.main-scroll > viewport {
+    background-color: #0d1117;
+}
+
+/* ── Welcome / Stopped state ────────────────────────────────────────────────── */
+
+.welcome-box {
+    padding: 60px 40px;
+}
+
+.app-logo {
+    font-size: 48px;
+    font-weight: 800;
+    color: #7c3aed;
+    letter-spacing: -1px;
+}
+
+.app-logo-sub {
+    font-size: 13px;
+    color: #6e7681;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-top: 4px;
+}
+
+.welcome-title {
+    font-size: 28px;
+    font-weight: 700;
+    color: #e6edf3;
+    margin-top: 32px;
+}
+
+.welcome-subtitle {
+    font-size: 15px;
+    color: #8b949e;
+    margin-top: 12px;
+    line-height: 1.6;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────────── */
+
+.btn-start {
+    background-color: #7c3aed;
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 600;
+    border-radius: 10px;
+    padding: 12px 40px;
+    border: none;
+    margin-top: 36px;
+    transition: background-color 150ms ease;
+}
+
+.btn-start:hover {
+    background-color: #6d28d9;
+}
+
+.btn-start:active {
+    background-color: #5b21b6;
+}
+
+.btn-stop {
+    background-color: #1a1f2e;
+    color: #f87171;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 10px;
+    padding: 11px 36px;
+    border: 1px solid #3d2626;
+    margin-top: 12px;
+    transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.btn-stop:hover {
+    background-color: #2d1515;
+    border-color: #f87171;
+}
+
+.btn-apply {
+    background-color: #7c3aed;
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 8px 20px;
+    border: none;
+    transition: background-color 150ms ease;
+}
+
+.btn-apply:hover {
+    background-color: #6d28d9;
+}
+
+.btn-apply:disabled {
+    background-color: #21262d;
+    color: #484f58;
+    border: 1px solid #30363d;
+}
+
+/* ── Section cards ──────────────────────────────────────────────────────────── */
+
+.section-card {
+    background-color: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 12px;
+    padding: 20px;
+    margin: 0 20px 16px 20px;
+}
+
+/* ── Settings rows ──────────────────────────────────────────────────────────── */
+
+.setting-name {
+    font-size: 14px;
+    color: #e6edf3;
+    font-weight: 500;
+}
+
+.setting-hint {
+    font-size: 12px;
+    color: #6e7681;
+    margin-top: 2px;
+}
+
+/* ── Status bar (running state header) ──────────────────────────────────────── */
+
+.status-bar {
+    background-color: #161b22;
+    border-bottom: 1px solid #21262d;
+    padding: 10px 20px;
+}
+
+.status-dot {
+    font-size: 10px;
+}
+
+.status-dot.connected {
+    color: #3fb950;
+}
+
+.status-dot.idle {
+    color: #f0883e;
+}
+
+.status-text {
+    font-size: 13px;
+    color: #8b949e;
+    font-weight: 500;
+}
+
+.status-fps {
+    font-size: 13px;
+    color: #3fb950;
+    font-weight: 600;
+}

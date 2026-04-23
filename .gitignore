@@ -36,7 +36,13 @@ Thumbs.db
 android/app/release/
 deb_dist/
 TetherLink-*.tar.gz
+tetherlink_*.deb
+tetherlink_*.zip
+
 
 # ── Git worktrees ─────────────────────────────────────────────────────────────
 .worktrees/
 .superpowers/
+
+
+# ── Miscellaneous ─────────────────────────────────────────────────────────────

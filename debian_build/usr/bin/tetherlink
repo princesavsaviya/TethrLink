@@ -1,0 +1,8 @@
+#!/bin/bash
+# TetherLink Launcher
+
+# Set PYTHONPATH to include our custom library location
+export PYTHONPATH="/usr/lib/tetherlink:$PYTHONPATH"
+
+# Run the python app
+python3 -m server.app.main "$@"

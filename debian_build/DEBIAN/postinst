@@ -1,0 +1,17 @@
+#!/bin/bash
+set -e
+
+# Update desktop database
+if [ -x /usr/bin/update-desktop-database ]; then
+    update-desktop-database /usr/share/applications
+fi
+
+# Update icon cache
+if [ -x /usr/bin/gtk-update-icon-cache ]; then
+    gtk-update-icon-cache -f /usr/share/icons/hicolor
+fi
+
+# Set correct permissions for the launcher
+chmod +x /usr/bin/tetherlink
+
+exit 0

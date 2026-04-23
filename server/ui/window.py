@@ -46,7 +46,7 @@ class TetherLinkWindow(Gtk.ApplicationWindow):
 
         # Set window icon
         icon_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "icons", "tetherlink.png"
+            os.path.dirname(__file__), "assets", "tetherlink.png"
         )
         if os.path.exists(icon_path):
             # GTK4 uses GIcon or Paintable for window icons
@@ -86,7 +86,7 @@ class TetherLinkWindow(Gtk.ApplicationWindow):
         box.add_css_class("welcome-box")
 
         icon_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "icons", "tetherlink.png"
+            os.path.dirname(__file__), "assets", "tetherlink.png"
         )
         if os.path.exists(icon_path):
             logo_img = Gtk.Image.new_from_file(icon_path)

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=TetherLink
+Comment=Wired Second Monitor via USB Tethering
+Exec=tetherlink
+Icon=tetherlink
+Terminal=false
+Type=Application
+Categories=Utility;Settings;
+Keywords=monitor;display;usb;tethering;tablet;
+StartupWMClass=com.tetherlink.server
