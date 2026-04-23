@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace  = "com.tetherlink"
+    namespace  = "com.tethrlink"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.tetherlink"
+        applicationId = "com.tethrlink"
         minSdk        = 21
         targetSdk     = 34
         versionCode   = 1

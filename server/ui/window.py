@@ -1,5 +1,5 @@
 """
-TetherLink — Main GTK4 Window  (V1)
+TethrLink — Main GTK4 Window  (V1)
 Single scrollable page, two states:
 
   Stopped:  logo + welcome + Start Server button
@@ -31,7 +31,7 @@ def _label(text: str, css: str = "", halign=Gtk.Align.START,
 
 # ── Window ────────────────────────────────────────────────────────────────────
 
-class TetherLinkWindow(Gtk.ApplicationWindow):
+class TethrLinkWindow(Gtk.ApplicationWindow):
 
     def __init__(self, app, on_start, on_stop):
         super().__init__(application=app)
@@ -40,13 +40,13 @@ class TetherLinkWindow(Gtk.ApplicationWindow):
         self._on_stop  = on_stop
         self._updating = False
 
-        self.set_title("TetherLink")
+        self.set_title("TethrLink")
         self.set_default_size(540, 480)
         self.set_resizable(False)
 
         # Set window icon
         icon_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "icons", "tetherlink.png"
+            os.path.dirname(__file__), "assets", "tethrlink.png"
         )
         if os.path.exists(icon_path):
             # GTK4 uses GIcon or Paintable for window icons
@@ -86,18 +86,18 @@ class TetherLinkWindow(Gtk.ApplicationWindow):
         box.add_css_class("welcome-box")
 
         icon_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "icons", "tetherlink.png"
+            os.path.dirname(__file__), "assets", "tethrlink.png"
         )
         if os.path.exists(icon_path):
             logo_img = Gtk.Image.new_from_file(icon_path)
             logo_img.set_pixel_size(128)
             logo_img.add_css_class("app-logo-img")
         else:
-            logo_img = _label("TetherLink", "app-logo", Gtk.Align.CENTER)
+            logo_img = _label("TethrLink", "app-logo", Gtk.Align.CENTER)
 
         sub = _label("DISPLAY EXTENDER", "app-logo-sub", Gtk.Align.CENTER)
 
-        title = _label("Welcome to TetherLink", "welcome-title", Gtk.Align.CENTER)
+        title = _label("Welcome to TethrLink", "welcome-title", Gtk.Align.CENTER)
         hint  = _label(
             "Connect your Android tablet via USB tethering, then start\n"
             "the server. Your tablet becomes a second display instantly.",

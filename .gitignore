@@ -35,8 +35,14 @@ Thumbs.db
 # ── Release artifacts ────────────────────────────────────────────────────────
 android/app/release/
 deb_dist/
-TetherLink-*.tar.gz
+TethrLink-*.tar.gz
+tethrlink_*.deb
+tethrlink_*.zip
+
 
 # ── Git worktrees ─────────────────────────────────────────────────────────────
 .worktrees/
 .superpowers/
+.claude/
+
+# ── Miscellaneous ─────────────────────────────────────────────────────────────

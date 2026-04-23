@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=TethrLink
+Comment=Wired Second Monitor via USB Tethering
+Exec=/usr/bin/tethrlink
+Icon=tethrlink
+Terminal=false
+Type=Application
+Categories=Utility;Network;
+Keywords=monitor;display;tethering;usb;
+StartupNotify=true
+StartupWMClass=tethrlink
+application-id=com.tethrlink.server

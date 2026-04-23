@@ -1,1166 +1,1543 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="TetherLink turns your Android tablet into a wired second monitor for Linux over USB. No Wi-Fi. ~47ms latency. 45 FPS.">
-  <meta property="og:title" content="TetherLink — Wired Second Monitor for Linux">
-  <meta property="og:description" content="Stream your Linux desktop to an Android tablet over USB. No Wi-Fi, no cloud, ~47ms latency.">
-  <meta property="og:type" content="website">
-  <meta name="theme-color" content="#0d1117">
-  <title>TetherLink — Wired Second Monitor for Linux</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&family=Syne:wght@400;600;700;800&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap" rel="stylesheet">
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>TethrLink - Wired Second Monitor for Android</title>
+  <meta name="description" content="Turn your Android tablet into a wired second monitor for Linux. USB tethering, no Wi-Fi, ~47 ms end-to-end latency."/>
+
+  <!-- Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-J0H8N36N7R"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-J0H8N36N7R');
+  </script>
+
+  <!-- Fonts: Space Grotesk + DM Sans -->
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <link rel="icon" type="image/x-icon" href="TethrLink.png"/>
 
   <style>
-    /* ── Tokens (exact app palette) ───────────────────────────────────────── */
+    /* ── TOKENS ── */
     :root {
-      --bg:           #0d1117;
-      --surface:      #161b22;
-      --surface-2:    #1c2128;
-      --border:       #21262d;
-      --border-2:     #30363d;
-      --text:         #e6edf3;
-      --muted:        #8b949e;
-      --dim:          #6e7681;
-      --accent:       #7c3aed;
-      --accent-h:     #6d28d9;
-      --accent-d:     #5b21b6;
-      --accent-glow:  rgba(124,58,237,.25);
-      --green:        #3fb950;
-      --green-glow:   rgba(63,185,80,.15);
-      --orange:       #f0883e;
-      --red:          #f87171;
-      --font-mono:    'JetBrains Mono', monospace;
-      --font-display: 'Syne', sans-serif;
-      --font-body:    'DM Sans', sans-serif;
+      --bg:         #05050f;
+      --bg2:        #09091c;
+      --surface:    #0e0e24;
+      --surface-e:  #14143a;
+      --glass:      rgba(14,14,36,0.6);
+      --glass-b:    rgba(99,102,241,0.12);
+      --indigo:     #6366F1;
+      --purple:     #8B5CF6;
+      --cyan:       #22D3EE;
+      --green:      #4ADE80;
+      --indigo-dim: rgba(99,102,241,0.15);
+      --glow:       rgba(99,102,241,0.3);
+      --glow-lg:    rgba(99,102,241,0.18);
+      --border:     rgba(99,102,241,0.15);
+      --border-v:   rgba(99,102,241,0.35);
+      --on-bg:      #eeeaff;
+      --on-surface: #b8b4e0;
+      --muted:      #6b689a;
+      --success:    #4ADE80;
+      --error:      #f87171;
+      /* z-index scale */
+      --z-base: 1; --z-card: 10; --z-nav: 50; --z-overlay: 100;
     }
 
-    /* ── Reset ─────────────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html { scroll-behavior: smooth; }
+
+    html {
+      scroll-behavior: smooth;
+      -webkit-text-size-adjust: 100%;
+    }
+
     body {
       background: var(--bg);
-      color: var(--text);
-      font-family: var(--font-body);
+      color: var(--on-bg);
+      font-family: 'DM Sans', sans-serif;
       font-size: 16px;
-      line-height: 1.6;
-      overflow-x: hidden;
-    }
-    a { color: inherit; text-decoration: none; }
-    img { display: block; max-width: 100%; }
-
-    /* ── Background grid ───────────────────────────────────────────────────── */
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background-image:
-        linear-gradient(var(--border) 1px, transparent 1px),
-        linear-gradient(90deg, var(--border) 1px, transparent 1px);
-      background-size: 48px 48px;
-      opacity: .25;
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    /* ── Noise overlay ─────────────────────────────────────────────────────── */
-    body::after {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E");
-      opacity: .025;
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    /* ── Nav ───────────────────────────────────────────────────────────────── */
-    nav {
-      position: fixed;
-      top: 0; left: 0; right: 0;
-      z-index: 100;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 40px;
-      height: 60px;
-      background: rgba(13,17,23,.85);
-      backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--border);
-    }
-    .nav-logo {
-      font-family: var(--font-mono);
-      font-weight: 800;
-      font-size: 15px;
-      color: var(--accent);
-      letter-spacing: -.3px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .nav-logo span { color: var(--muted); font-weight: 400; }
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .nav-link {
-      font-size: 13px;
-      color: var(--muted);
-      padding: 6px 14px;
-      border-radius: 6px;
-      transition: color .15s, background .15s;
-    }
-    .nav-link:hover { color: var(--text); background: var(--surface); }
-    .nav-cta {
-      font-size: 13px;
-      font-weight: 600;
-      color: #fff;
-      background: var(--accent);
-      padding: 6px 16px;
-      border-radius: 8px;
-      transition: background .15s, transform .1s;
-    }
-    .nav-cta:hover { background: var(--accent-h); transform: translateY(-1px); }
-
-    /* ── Hero ──────────────────────────────────────────────────────────────── */
-    .hero {
-      position: relative;
-      z-index: 1;
+      line-height: 1.65;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 100px 24px 60px;
-      text-align: center;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
     }
-    .hero-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--green);
-      background: var(--green-glow);
-      border: 1px solid rgba(63,185,80,.3);
-      padding: 4px 12px;
-      border-radius: 100px;
-      margin-bottom: 28px;
-      letter-spacing: .5px;
-      animation: fadeUp .6s ease both;
+
+    a { color: inherit; text-decoration: none; }
+    img { display: block; max-width: 100%; }
+
+    /* ── AURORA BACKGROUND ── */
+    .aurora {
+      position: fixed; inset: 0; z-index: 0;
+      pointer-events: none; overflow: hidden;
     }
-    .hero-badge::before {
+    .aurora-blob {
+      position: absolute; border-radius: 50%;
+      filter: blur(120px); opacity: 0.12;
+    }
+    .ab1 {
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, #6366F1, transparent 70%);
+      top: -200px; left: -100px;
+      animation: drift1 18s ease-in-out infinite;
+    }
+    .ab2 {
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, #8B5CF6, transparent 70%);
+      top: 30%; right: -150px;
+      animation: drift2 22s ease-in-out infinite;
+    }
+    .ab3 {
+      width: 400px; height: 400px;
+      background: radial-gradient(circle, #22D3EE, transparent 70%);
+      bottom: 10%; left: 20%;
+      animation: drift3 16s ease-in-out infinite;
+      opacity: 0.07;
+    }
+    @keyframes drift1 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(60px,80px)} }
+    @keyframes drift2 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(-80px,-60px)} }
+    @keyframes drift3 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(40px,-50px)} }
+
+    /* Grid overlay */
+    body::before {
       content: '';
-      width: 6px; height: 6px;
-      background: var(--green);
-      border-radius: 50%;
-      animation: pulse 2s ease infinite;
-    }
-    @keyframes pulse {
-      0%,100% { opacity: 1; transform: scale(1); }
-      50% { opacity: .5; transform: scale(.8); }
-    }
-    .hero-title {
-      font-family: var(--font-display);
-      font-size: clamp(44px, 8vw, 84px);
-      font-weight: 800;
-      line-height: 1.05;
-      letter-spacing: -2px;
-      max-width: 900px;
-      animation: fadeUp .6s .1s ease both;
-    }
-    .hero-title em {
-      font-style: normal;
-      background: linear-gradient(135deg, var(--accent) 0%, #a855f7 50%, #c084fc 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-    .hero-sub {
-      font-size: clamp(16px, 2.5vw, 20px);
-      color: var(--muted);
-      max-width: 560px;
-      margin-top: 20px;
-      line-height: 1.7;
-      font-weight: 300;
-      animation: fadeUp .6s .2s ease both;
-    }
-
-    /* ── Connection diagram ────────────────────────────────────────────────── */
-    .diagram {
-      display: flex;
-      align-items: center;
-      gap: 0;
-      margin: 52px 0 48px;
-      animation: fadeUp .6s .3s ease both;
-    }
-    .device-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 18px 24px;
-      min-width: 140px;
-      text-align: center;
-    }
-    .device-box.tablet { min-width: 100px; border-radius: 10px; }
-    .device-icon { font-size: 28px; margin-bottom: 6px; }
-    .device-label {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--dim);
-      letter-spacing: .5px;
-    }
-    .device-status {
-      font-size: 11px;
-      color: var(--green);
-      margin-top: 4px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-    }
-    .device-status::before {
-      content: '';
-      width: 5px; height: 5px;
-      background: var(--green);
-      border-radius: 50%;
-      animation: pulse 2s ease infinite;
-    }
-    .cable {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 6px;
-      padding: 0 4px;
-    }
-    .cable-label {
-      font-family: var(--font-mono);
-      font-size: 9px;
-      color: var(--dim);
-      letter-spacing: 1px;
-      text-transform: uppercase;
-    }
-    .cable-track {
-      position: relative;
-      width: 160px;
-      height: 20px;
-      display: flex;
-      align-items: center;
-    }
-    .cable-line {
-      position: absolute;
-      left: 0; right: 0;
-      height: 2px;
-      background: linear-gradient(90deg, var(--border-2), var(--accent), var(--border-2));
-    }
-    .packet {
-      position: absolute;
-      width: 10px; height: 10px;
-      background: var(--accent);
-      border-radius: 50%;
-      top: 50%; transform: translateY(-50%);
-      box-shadow: 0 0 8px var(--accent-glow);
-      animation: packet-flow 1.8s linear infinite;
-    }
-    .packet:nth-child(2) { animation-delay: .6s; background: #a855f7; }
-    .packet:nth-child(3) { animation-delay: 1.2s; }
-    @keyframes packet-flow {
-      0%   { left: -10px; opacity: 0; }
-      8%   { opacity: 1; }
-      92%  { opacity: 1; }
-      100% { left: 100%; opacity: 0; }
-    }
-    .cable-stats {
-      display: flex;
-      gap: 12px;
-      margin-top: 4px;
-    }
-    .cable-stat {
-      font-family: var(--font-mono);
-      font-size: 10px;
-      padding: 2px 7px;
-      border-radius: 4px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      color: var(--muted);
-    }
-    .cable-stat.live { color: var(--green); border-color: rgba(63,185,80,.3); }
-
-    /* ── Download buttons ──────────────────────────────────────────────────── */
-    .hero-actions {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      justify-content: center;
-      animation: fadeUp .6s .4s ease both;
-    }
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      padding: 13px 28px;
-      border-radius: 10px;
-      font-family: var(--font-body);
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all .15s ease;
-      border: none;
-      text-decoration: none;
-    }
-    .btn-primary {
-      background: var(--accent);
-      color: #fff;
-      box-shadow: 0 0 0 0 var(--accent-glow);
-    }
-    .btn-primary:hover {
-      background: var(--accent-h);
-      transform: translateY(-2px);
-      box-shadow: 0 8px 24px var(--accent-glow);
-    }
-    .btn-secondary {
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-    }
-    .btn-secondary:hover {
-      background: var(--surface-2);
-      border-color: var(--border-2);
-      transform: translateY(-2px);
-    }
-    .btn-icon { font-size: 18px; }
-    .btn-sub {
-      font-size: 11px;
-      font-weight: 400;
-      color: var(--muted);
-      display: block;
-      line-height: 1.2;
-    }
-    .btn-primary .btn-sub { color: rgba(255,255,255,.6); }
-    .btn-text { display: flex; flex-direction: column; }
-    .btn-label { line-height: 1.2; }
-
-    /* ── Stats strip ───────────────────────────────────────────────────────── */
-    .stats-strip {
-      position: relative;
-      z-index: 1;
-      display: flex;
-      justify-content: center;
-      gap: 0;
-      padding: 0 24px;
-      margin-bottom: 100px;
-    }
-    .stat-item {
-      flex: 1;
-      max-width: 220px;
-      padding: 28px 24px;
-      text-align: center;
-      border: 1px solid var(--border);
-      background: var(--surface);
-      position: relative;
-      opacity: 0;
-      transform: translateY(20px);
-      transition: opacity .5s, transform .5s;
-    }
-    .stat-item:first-child { border-radius: 12px 0 0 12px; }
-    .stat-item:last-child  { border-radius: 0 12px 12px 0; border-left: none; }
-    .stat-item:not(:first-child):not(:last-child) { border-left: none; }
-    .stat-item.visible { opacity: 1; transform: translateY(0); }
-    .stat-number {
-      font-family: var(--font-mono);
-      font-size: 38px;
-      font-weight: 800;
-      color: var(--accent);
-      line-height: 1;
-    }
-    .stat-number .unit {
-      font-size: 18px;
-      font-weight: 400;
-      color: var(--muted);
-    }
-    .stat-desc {
-      font-size: 13px;
-      color: var(--muted);
-      margin-top: 6px;
-      font-weight: 400;
-    }
-
-    /* ── Section layout ────────────────────────────────────────────────────── */
-    section {
-      position: relative;
-      z-index: 1;
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 0 24px 100px;
-    }
-    .section-label {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--accent);
-      letter-spacing: 2px;
-      text-transform: uppercase;
-      margin-bottom: 12px;
-    }
-    .section-title {
-      font-family: var(--font-display);
-      font-size: clamp(28px, 4vw, 42px);
-      font-weight: 800;
-      letter-spacing: -1px;
-      line-height: 1.15;
-      margin-bottom: 16px;
-    }
-    .section-sub {
-      font-size: 17px;
-      color: var(--muted);
-      max-width: 520px;
-      line-height: 1.7;
-      font-weight: 300;
-    }
-    .section-header { margin-bottom: 52px; }
-
-    /* ── Features grid ─────────────────────────────────────────────────────── */
-    .features-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 16px;
-    }
-    .feature-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 28px;
-      transition: border-color .2s, transform .2s, background .2s;
-      opacity: 0;
-      transform: translateY(24px);
-      transition: opacity .5s, transform .5s, border-color .2s, background .2s;
-    }
-    .feature-card.visible { opacity: 1; transform: translateY(0); }
-    .feature-card:hover {
-      border-color: var(--border-2);
-      background: var(--surface-2);
-      transform: translateY(-3px) !important;
-    }
-    .feature-icon {
-      font-size: 24px;
-      margin-bottom: 14px;
-      display: block;
-    }
-    .feature-name {
-      font-family: var(--font-display);
-      font-size: 16px;
-      font-weight: 700;
-      margin-bottom: 8px;
-      letter-spacing: -.3px;
-    }
-    .feature-desc {
-      font-size: 14px;
-      color: var(--muted);
-      line-height: 1.65;
-    }
-
-    /* ── How it works ──────────────────────────────────────────────────────── */
-    .steps {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 24px;
-      counter-reset: step;
-    }
-    .step {
-      position: relative;
-      counter-increment: step;
-      opacity: 0;
-      transform: translateY(24px);
-      transition: opacity .5s, transform .5s;
-    }
-    .step.visible { opacity: 1; transform: translateY(0); }
-    .step::before {
-      content: '0' counter(step);
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--accent);
-      letter-spacing: 1px;
-      display: block;
-      margin-bottom: 16px;
-    }
-    .step-line {
-      position: absolute;
-      top: 5px; right: -12px;
-      width: 24px; height: 1px;
-      background: var(--border-2);
-    }
-    .step:last-child .step-line { display: none; }
-    .step-title {
-      font-family: var(--font-display);
-      font-size: 18px;
-      font-weight: 700;
-      margin-bottom: 10px;
-      letter-spacing: -.3px;
-    }
-    .step-desc {
-      font-size: 14px;
-      color: var(--muted);
-      line-height: 1.65;
-    }
-    .step-code {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--green);
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px 14px;
-      margin-top: 12px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    /* ── Terminal block ────────────────────────────────────────────────────── */
-    .terminal {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      overflow: hidden;
-      margin-top: 48px;
-    }
-    .terminal-bar {
-      background: var(--surface-2);
-      border-bottom: 1px solid var(--border);
-      padding: 10px 16px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .terminal-dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-    }
-    .terminal-dot.red   { background: #ff5f57; }
-    .terminal-dot.amber { background: #febc2e; }
-    .terminal-dot.green { background: #28c840; }
-    .terminal-title {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--dim);
-      margin-left: 4px;
-    }
-    .terminal-body {
-      padding: 20px 24px;
-      font-family: var(--font-mono);
-      font-size: 13px;
-      line-height: 1.8;
-    }
-    .t-dim    { color: var(--dim); }
-    .t-prompt { color: var(--accent); }
-    .t-cmd    { color: var(--text); }
-    .t-out    { color: var(--muted); }
-    .t-ok     { color: var(--green); }
-
-    /* ── Download section ──────────────────────────────────────────────────── */
-    .download-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-    }
-    .download-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 32px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-      transition: border-color .2s, transform .2s;
-      opacity: 0;
-      transform: translateY(24px);
-      transition: opacity .5s, transform .5s, border-color .2s;
-    }
-    .download-card.visible { opacity: 1; transform: translateY(0); }
-    .download-card:hover { border-color: var(--accent); }
-    .download-card-header { display: flex; align-items: center; gap: 14px; }
-    .download-platform-icon { font-size: 36px; }
-    .download-platform {
-      font-family: var(--font-display);
-      font-size: 20px;
-      font-weight: 700;
-      letter-spacing: -.3px;
-    }
-    .download-platform-sub {
-      font-size: 13px;
-      color: var(--muted);
-      margin-top: 2px;
-    }
-    .download-requirements {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    .download-requirements li {
-      font-size: 13px;
-      color: var(--muted);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .download-requirements li::before {
-      content: '›';
-      color: var(--accent);
-      font-weight: 700;
-    }
-    .download-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      padding: 14px;
-      border-radius: 10px;
-      font-weight: 600;
-      font-size: 15px;
-      text-align: center;
-      transition: all .15s;
-      cursor: pointer;
-      text-decoration: none;
-    }
-    .download-btn.linux {
-      background: var(--accent);
-      color: #fff;
-    }
-    .download-btn.linux:hover {
-      background: var(--accent-h);
-      transform: translateY(-2px);
-      box-shadow: 0 8px 24px var(--accent-glow);
-    }
-    .download-btn.android {
-      background: transparent;
-      color: var(--text);
-      border: 1px solid var(--border-2);
-    }
-    .download-btn.android:hover {
-      background: var(--surface-2);
-      border-color: var(--accent);
-      transform: translateY(-2px);
-    }
-    .download-version {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--dim);
-      text-align: center;
-      margin-top: -8px;
-    }
-
-    /* ── Subscribe section ─────────────────────────────────────────────────── */
-    .subscribe-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 56px 48px;
-      text-align: center;
-      position: relative;
-      overflow: hidden;
-    }
-    .subscribe-box::before {
-      content: '';
-      position: absolute;
-      top: -80px; left: 50%;
-      transform: translateX(-50%);
-      width: 400px; height: 200px;
-      background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
+      position: fixed; inset: 0; z-index: 0;
+      background-image:
+        linear-gradient(rgba(99,102,241,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(99,102,241,0.04) 1px, transparent 1px);
+      background-size: 48px 48px;
       pointer-events: none;
     }
-    .subscribe-title {
-      font-family: var(--font-display);
-      font-size: clamp(24px, 4vw, 36px);
-      font-weight: 800;
-      letter-spacing: -1px;
-      margin-bottom: 10px;
-    }
-    .subscribe-sub {
-      color: var(--muted);
-      font-size: 16px;
-      margin-bottom: 36px;
-      font-weight: 300;
-    }
-    .subscribe-form {
-      display: flex;
-      gap: 10px;
-      max-width: 480px;
-      margin: 0 auto;
-    }
-    .subscribe-input {
-      flex: 1;
-      background: var(--bg);
-      border: 1px solid var(--border-2);
-      border-radius: 10px;
-      padding: 13px 18px;
-      font-family: var(--font-body);
-      font-size: 15px;
-      color: var(--text);
-      outline: none;
-      transition: border-color .15s;
-    }
-    .subscribe-input::placeholder { color: var(--dim); }
-    .subscribe-input:focus { border-color: var(--accent); }
-    .subscribe-submit {
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 10px;
-      padding: 13px 24px;
-      font-family: var(--font-body);
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background .15s, transform .1s;
-      white-space: nowrap;
-    }
-    .subscribe-submit:hover { background: var(--accent-h); transform: translateY(-1px); }
-    .subscribe-submit:disabled { opacity: .5; cursor: not-allowed; transform: none; }
-    .subscribe-note {
-      font-size: 12px;
-      color: var(--dim);
-      margin-top: 14px;
-    }
-    .subscribe-msg {
-      margin-top: 14px;
-      font-size: 14px;
-      font-weight: 500;
-      display: none;
-    }
-    .subscribe-msg.success { color: var(--green); display: block; }
-    .subscribe-msg.error   { color: var(--red);   display: block; }
 
-    /* ── Footer ────────────────────────────────────────────────────────────── */
-    footer {
+    /* ── NAVBAR ── */
+    .nav-wrap {
+      position: fixed; top: 16px; left: 0; right: 0;
+      display: flex; justify-content: center;
+      z-index: var(--z-nav);
+      padding: 0 20px;
+    }
+    nav {
+      width: 100%; max-width: 1100px;
+      background: rgba(8,8,22,0.75);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border-v);
+      border-radius: 16px;
+      box-shadow: 0 0 0 1px rgba(99,102,241,0.08), 0 8px 40px rgba(0,0,0,0.5);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 20px; height: 56px;
+    }
+    .nav-brand {
+      display: flex; align-items: center; gap: 9px;
+      text-decoration: none;
+    }
+    .nav-logo {
+      width: 28px; height: 28px; border-radius: 7px;
+      border: 1px solid var(--border-v); object-fit: cover;
+    }
+    .nav-wordmark {
+      font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+      font-size: 17px; letter-spacing: -0.02em;
+      background: linear-gradient(135deg, var(--indigo), var(--purple));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .nav-links {
+      display: flex; align-items: center; gap: 28px; list-style: none;
+    }
+    .nav-links a {
+      font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
+      color: var(--muted); transition: color 200ms;
+    }
+    .nav-links a:hover { color: var(--on-bg); }
+    .nav-actions { display: flex; gap: 10px; align-items: center; }
+    .btn-ghost {
+      font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
+      background: transparent; border: 1px solid var(--border-v);
+      color: var(--on-surface); padding: 7px 16px; border-radius: 9px;
+      cursor: pointer; transition: all 200ms; display: inline-flex; align-items: center; gap: 6px;
+    }
+    .btn-ghost:hover { background: var(--indigo-dim); border-color: var(--indigo); color: var(--on-bg); }
+    .btn-primary {
+      font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 600;
+      background: linear-gradient(135deg, var(--indigo), var(--purple));
+      color: #fff; border: none; padding: 8px 18px; border-radius: 9px;
+      cursor: pointer; transition: opacity 200ms, transform 200ms, box-shadow 200ms;
+      box-shadow: 0 0 16px rgba(99,102,241,0.35);
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .btn-primary:hover { opacity: 0.88; transform: translateY(-1px); box-shadow: 0 6px 24px rgba(99,102,241,0.45); }
+
+    /* ── MAIN ── */
+    main {
+      flex: 1; position: relative; z-index: var(--z-base);
+      padding-top: 88px;
+    }
+
+    .container {
+      max-width: 1100px; margin: 0 auto; padding: 0 40px;
+    }
+
+    /* ── HERO ── */
+    .hero {
+      padding: 80px 0 100px;
+      display: grid; grid-template-columns: 1fr 1fr;
+      align-items: center; gap: 64px;
+    }
+    .hero-left { display: flex; flex-direction: column; gap: 28px; }
+
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.25);
+      border-radius: 100px; padding: 5px 14px 5px 8px;
+      width: fit-content;
+    }
+    .hero-badge-dot {
+      width: 7px; height: 7px; background: var(--green);
+      border-radius: 50%; animation: blink-dot 2s ease infinite;
+    }
+    @keyframes blink-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .hero-badge span {
+      font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 600;
+      color: var(--green); letter-spacing: 0.06em; text-transform: uppercase;
+    }
+
+    h1.hero-h1 {
+      font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+      font-size: clamp(38px, 4.5vw, 60px);
+      line-height: 1.06; letter-spacing: -0.03em; color: var(--on-bg);
+    }
+    .grad-text {
+      background: linear-gradient(135deg, var(--indigo) 0%, var(--purple) 50%, var(--cyan) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .hero-sub {
+      font-size: 16px; line-height: 1.75; color: var(--on-surface);
+      max-width: 480px; border-left: 2px solid var(--indigo); padding-left: 16px;
+    }
+    .hero-sub code {
+      font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      background: var(--surface-e); border: 1px solid var(--border-v);
+      padding: 1px 6px; border-radius: 4px; color: var(--indigo);
+    }
+    .hero-actions {
+      display: flex; flex-wrap: wrap; gap: 14px; padding-top: 4px;
+    }
+    .hero-cta {
+      display: inline-flex; align-items: center; gap: 9px;
+      font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600;
+      background: linear-gradient(135deg, var(--indigo), var(--purple));
+      color: #fff; border: none; padding: 14px 26px; border-radius: 12px;
+      cursor: pointer; text-decoration: none;
+      box-shadow: 0 0 24px rgba(99,102,241,0.4), inset 0 1px 0 rgba(255,255,255,0.1);
+      transition: opacity 200ms, transform 200ms, box-shadow 200ms;
+    }
+    .hero-cta:hover { opacity: 0.9; transform: translateY(-2px); box-shadow: 0 10px 36px rgba(99,102,241,0.5); }
+    .hero-cta-outline {
+      display: inline-flex; align-items: center; gap: 9px;
+      font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 500;
+      background: var(--glass); border: 1px solid var(--border-v);
+      color: var(--on-bg); padding: 14px 26px; border-radius: 12px;
+      cursor: pointer; text-decoration: none;
+      backdrop-filter: blur(8px);
+      transition: border-color 200ms, background 200ms, transform 200ms;
+    }
+    .hero-cta-outline:hover { border-color: var(--indigo); background: var(--indigo-dim); transform: translateY(-2px); }
+
+    .hero-trust {
+      display: flex; align-items: center; gap: 20px;
+      font-size: 12px; color: var(--muted);
+    }
+    .hero-trust-item { display: flex; align-items: center; gap: 6px; }
+    .hero-trust-item svg { flex-shrink: 0; }
+
+    /* ── HERO VISUAL ── */
+    .hero-right {
+      display: flex; justify-content: center; align-items: center;
       position: relative;
-      z-index: 1;
-      border-top: 1px solid var(--border);
-      padding: 40px 24px;
-      max-width: 1100px;
-      margin: 0 auto;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
+    }
+
+    /* Real screenshot tablet frame */
+    .tablet-frame { position: relative; width: 100%; max-width: 1080px; }
+    .tablet-frame-border {
+      border-radius: 16px; overflow: hidden;
+      border: 1.5px solid rgba(99,102,241,0.5);
+      box-shadow:
+        0 0 80px rgba(99,102,241,0.22),
+        0 24px 80px rgba(0,0,0,0.75);
+      position: relative;
+    }
+    .tablet-frame-border img { width: 100%; display: block; }
+    .fps-badge {
+      position: absolute; top: 12px; right: 12px; z-index: 10;
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(5,5,15,0.82); border: 1px solid rgba(74,222,128,0.4);
+      backdrop-filter: blur(10px); border-radius: 8px;
+      padding: 6px 12px;
+      font-family: 'DM Sans', monospace; font-size: 12px; font-weight: 600; color: var(--green);
+    }
+    .fps-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: blink-dot 1.5s ease infinite; }
+    .stream-badge {
+      position: absolute; bottom: 12px; left: 12px; z-index: 10;
+      display: flex; align-items: center; gap: 7px;
+      background: rgba(5,5,15,0.82); border: 1px solid var(--border-v);
+      backdrop-filter: blur(10px); border-radius: 8px;
+      padding: 6px 12px;
+      font-family: 'DM Sans', monospace; font-size: 11px; font-weight: 500; color: var(--on-surface);
+    }
+
+    /* Floating stat chip */
+    .hero-stat-float {
+      position: absolute; left: -28px; top: 20px; z-index: 10;
+    }
+    .stat-chip {
+      background: rgba(10,10,28,0.88); border: 1px solid var(--border-v);
+      backdrop-filter: blur(12px); border-radius: 10px;
+      padding: 10px 14px; display: flex; flex-direction: column; gap: 2px;
+      box-shadow: 0 0 20px rgba(99,102,241,0.2); min-width: 120px;
+    }
+    .stat-chip-lbl { font-family: 'DM Sans', monospace; font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+    .stat-chip-val { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 22px; letter-spacing: -0.02em; }
+    .stat-chip-val .u { font-size: 13px; color: var(--indigo); }
+
+    /* ── APP SCREENSHOTS ── */
+    .screenshots-section { padding: 48px 0 64px; }
+    .app-shots-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+    }
+    .app-shot { display: flex; flex-direction: column; gap: 10px; }
+    .app-shot-frame {
+      border-radius: 12px; overflow: hidden;
+      border: 1px solid var(--border-v);
+      box-shadow: 0 0 24px rgba(99,102,241,0.1), 0 8px 24px rgba(0,0,0,0.5);
+      transition: border-color 250ms, box-shadow 250ms, transform 250ms;
+    }
+    .app-shot-frame:hover {
+      border-color: var(--indigo); transform: translateY(-4px);
+      box-shadow: 0 0 40px rgba(99,102,241,0.2), 0 16px 40px rgba(0,0,0,0.6);
+    }
+    .app-shot-frame img { width: 100%; display: block; }
+    .app-shot-lbl {
+      display: flex; align-items: center; gap: 8px;
+      font-family: 'DM Sans', monospace; font-size: 12px; font-weight: 500; color: var(--on-surface);
+    }
+    .app-shot-num {
+      font-family: 'Space Grotesk', sans-serif; font-size: 11px; font-weight: 700;
+      color: var(--indigo); background: var(--indigo-dim); border: 1px solid var(--border-v);
+      border-radius: 5px; padding: 1px 6px; flex-shrink: 0;
+    }
+
+    /* ── MARQUEE ── */
+    .marquee-wrap {
+      border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+      padding: 14px 0; overflow: hidden; position: relative;
+      background: linear-gradient(90deg, var(--bg), var(--bg2) 50%, var(--bg));
+    }
+    .marquee-track {
+      display: flex; gap: 0; width: max-content;
+      animation: marquee 30s linear infinite;
+    }
+    @keyframes marquee { 0%{transform:translateX(0)} 100%{transform:translateX(-50%)} }
+    .marquee-item {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 0 36px; white-space: nowrap;
+      font-family: 'DM Sans', monospace; font-size: 12px; font-weight: 500;
+      color: var(--muted); letter-spacing: 0.06em;
+    }
+    .marquee-dot { width: 3px; height: 3px; border-radius: 50%; background: var(--indigo); }
+    .marquee-item.highlight { color: var(--on-surface); }
+
+    /* ── STATS ── */
+    .stats-section {
+      padding: 64px 0;
+    }
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(4,1fr); gap: 1px;
+      background: var(--border); border: 1px solid var(--border); border-radius: 16px;
+      overflow: hidden;
+    }
+    .stat-cell {
+      background: var(--surface); padding: 32px 28px;
+      display: flex; flex-direction: column; gap: 6px;
+      position: relative; overflow: hidden;
+      transition: background 250ms;
+    }
+    .stat-cell::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    }
+    .stat-cell:nth-child(1)::before,
+    .stat-cell:nth-child(3)::before { background: linear-gradient(90deg, var(--indigo), var(--purple)); }
+    .stat-cell:nth-child(2)::before,
+    .stat-cell:nth-child(4)::before { background: linear-gradient(90deg, var(--purple), var(--cyan)); }
+    .stat-cell:hover { background: var(--surface-e); }
+    .stat-lbl {
+      font-family: 'DM Sans', monospace; font-size: 10px; font-weight: 600;
+      color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em;
+    }
+    .stat-val {
+      font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 40px;
+      letter-spacing: -0.03em; line-height: 1; color: var(--on-bg);
+    }
+    .stat-val .u { font-size: 20px; color: var(--indigo); font-weight: 600; }
+    .stat-val .u.p { color: var(--purple); }
+    .stat-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+    /* ── SECTION HEAD ── */
+    .section-head { display: flex; flex-direction: column; gap: 10px; margin-bottom: 48px; }
+    .section-eyebrow {
+      font-family: 'DM Sans', monospace; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.16em; text-transform: uppercase; color: var(--indigo);
+    }
+    .section-head h2 {
+      font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+      font-size: clamp(28px, 4vw, 46px); letter-spacing: -0.025em; color: var(--on-bg);
+      line-height: 1.1;
+    }
+    .section-head p {
+      font-size: 15px; color: var(--on-surface); max-width: 560px; line-height: 1.7;
+    }
+    .section-accent {
+      width: 60px; height: 3px; border-radius: 2px;
+      background: linear-gradient(90deg, var(--indigo), var(--purple));
+    }
+
+    /* ── FEATURES BENTO ── */
+    .features-section { padding: 48px 0 80px; }
+
+    .bento {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: auto auto;
       gap: 16px;
     }
-    .footer-logo {
-      font-family: var(--font-mono);
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--accent);
+    .bento-card {
+      background: var(--glass); border: 1px solid var(--glass-b);
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      border-radius: 16px; padding: 32px;
+      display: flex; flex-direction: column; gap: 18px;
+      transition: border-color 250ms, box-shadow 250ms, transform 250ms;
+      cursor: default;
     }
-    .footer-copy { font-size: 13px; color: var(--dim); }
-    .footer-links {
-      display: flex;
-      gap: 20px;
+    .bento-card:hover {
+      border-color: var(--border-v);
+      box-shadow: 0 0 32px rgba(99,102,241,0.12);
+      transform: translateY(-2px);
     }
-    .footer-link {
-      font-size: 13px;
-      color: var(--dim);
-      transition: color .15s;
-    }
-    .footer-link:hover { color: var(--text); }
+    .bento-card.wide { grid-column: span 2; }
+    .bento-card.tall { grid-row: span 2; }
 
-    /* ── Divider ───────────────────────────────────────────────────────────── */
-    .section-divider {
-      position: relative;
-      z-index: 1;
-      max-width: 1100px;
-      margin: 0 auto 80px;
-      padding: 0 24px;
+    .bento-icon {
+      width: 48px; height: 48px; border-radius: 12px;
+      background: var(--indigo-dim); border: 1px solid var(--border-v);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
     }
-    .section-divider hr {
-      border: none;
+    .bento-icon.p { background: rgba(139,92,246,0.12); border-color: rgba(139,92,246,0.3); }
+    .bento-icon.c { background: rgba(34,211,238,0.08); border-color: rgba(34,211,238,0.25); }
+
+    .bento-card h3 {
+      font-family: 'Space Grotesk', sans-serif; font-weight: 600;
+      font-size: 20px; letter-spacing: -0.01em; color: var(--on-bg);
+    }
+    .bento-card p { font-size: 14px; line-height: 1.75; color: var(--on-surface); }
+
+    .bento-code-block {
+      background: rgba(0,0,0,0.5); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 16px; margin-top: 4px;
+      font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      line-height: 1.7; color: var(--on-surface);
+    }
+    .bento-code-block .k { color: var(--purple); }
+    .bento-code-block .v { color: var(--green); }
+    .bento-code-block .s { color: var(--on-surface); }
+    .bento-code-block .c { color: var(--muted); }
+
+    .bento-tags {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px;
+    }
+    .bento-tag {
+      font-family: 'DM Sans', monospace; font-size: 11px; font-weight: 500;
+      padding: 4px 10px; border-radius: 6px;
+      border: 1px solid var(--border-v); color: var(--on-surface);
+      background: rgba(99,102,241,0.06);
+    }
+
+    /* ── HOW IT WORKS ── */
+    .how-section { padding: 48px 0 80px; }
+    .how-layout {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 80px; align-items: start;
+    }
+    .how-steps { display: flex; flex-direction: column; gap: 0; }
+    .how-step {
+      display: flex; gap: 20px; padding-bottom: 36px; position: relative;
+    }
+    .how-step:not(:last-child)::before {
+      content: ''; position: absolute;
+      left: 17px; top: 44px; bottom: 0; width: 2px;
+      background: linear-gradient(180deg, var(--border-v), var(--border));
+    }
+    .how-num {
+      width: 36px; height: 36px; flex-shrink: 0; border-radius: 10px;
+      background: var(--indigo-dim); border: 1px solid var(--border-v);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Space Grotesk', sans-serif; font-size: 13px; font-weight: 700;
+      color: var(--indigo); z-index: 1;
+    }
+    .how-step-body { padding-top: 5px; }
+    .how-step-body h4 {
+      font-family: 'Space Grotesk', sans-serif; font-weight: 600;
+      font-size: 17px; color: var(--on-bg); margin-bottom: 6px;
+    }
+    .how-step-body p { font-size: 14px; color: var(--on-surface); line-height: 1.7; }
+    .how-step-body code {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      background: var(--surface-e); border: 1px solid var(--border-v);
+      padding: 1px 5px; border-radius: 4px; color: var(--indigo);
+    }
+
+    /* Terminal */
+    .terminal {
+      background: #010108; border: 1px solid var(--border-v);
+      border-radius: 14px; overflow: hidden;
+      box-shadow: 0 0 40px rgba(99,102,241,0.1);
+      position: sticky; top: 90px;
+    }
+    .term-bar {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 12px 16px; display: flex; align-items: center; gap: 8px;
+    }
+    .term-dots { display: flex; gap: 6px; }
+    .tdot { width: 11px; height: 11px; border-radius: 50%; }
+    .tdot.r { background: #ff5f57; } .tdot.a { background: #febc2e; } .tdot.g { background: #28c840; }
+    .term-title {
+      font-family: 'DM Sans', monospace; font-size: 11px; color: var(--muted);
+      margin: 0 auto; letter-spacing: 0.06em;
+    }
+    .term-body {
+      padding: 24px; font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px; line-height: 1.85;
+      white-space: pre; overflow-x: auto; color: var(--muted);
+    }
+    .t-prompt { color: var(--indigo); font-weight: 500; }
+    .t-ok { color: var(--green); }
+    .t-key { color: var(--purple); }
+    .t-val { color: var(--on-bg); }
+    .t-dim { color: var(--muted); }
+    .t-cur {
+      display: inline-block; width: 7px; height: 14px;
+      background: var(--indigo); vertical-align: middle;
+      animation: blink-c 1s step-end infinite;
+    }
+    @keyframes blink-c { 0%,100%{opacity:1} 50%{opacity:0} }
+
+    /* ── DOWNLOAD ── */
+    .dl-section { padding: 48px 0 80px; }
+    .dl-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 8px;
+    }
+    .dl-card {
+      background: var(--glass); border: 1px solid var(--glass-b);
+      backdrop-filter: blur(16px); border-radius: 16px; padding: 32px;
+      display: flex; flex-direction: column; align-items: center;
+      gap: 18px; text-align: center; position: relative; overflow: hidden;
+      transition: border-color 250ms, box-shadow 250ms, transform 250ms;
+      cursor: default;
+    }
+    .dl-card.primary { border-color: var(--border-v); }
+    .dl-card:hover { transform: translateY(-4px); box-shadow: 0 0 40px rgba(99,102,241,0.15); }
+    .dl-card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--indigo), var(--purple));
+      border-radius: 16px 16px 0 0;
+    }
+    .dl-card.secondary::before { opacity: 0.4; }
+    .dl-card-icon {
+      width: 64px; height: 64px; border-radius: 16px;
+      background: var(--indigo-dim); border: 1px solid var(--border-v);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .dl-card.secondary .dl-card-icon {
+      background: rgba(139,92,246,0.1); border-color: rgba(139,92,246,0.25);
+    }
+    .dl-name {
+      font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+      font-size: 22px; color: var(--on-bg);
+    }
+    .dl-meta { font-family: 'DM Sans', monospace; font-size: 12px; color: var(--muted); }
+    .dl-btn {
+      width: 100%; padding: 14px 24px; border-radius: 11px; border: none;
+      font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 600;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      cursor: pointer; text-decoration: none;
+      transition: opacity 200ms, transform 200ms, box-shadow 200ms;
+    }
+    .dl-btn.main {
+      background: linear-gradient(135deg, var(--indigo), var(--purple));
+      color: #fff; box-shadow: 0 0 20px rgba(99,102,241,0.35);
+    }
+    .dl-btn.main:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 8px 30px rgba(99,102,241,0.45); }
+    .dl-btn.alt {
+      background: transparent; border: 1px solid var(--border-v); color: var(--on-surface);
+    }
+    .dl-btn.alt:hover { background: var(--indigo-dim); border-color: var(--indigo); transform: translateY(-1px); }
+    .dl-note {
+      margin-top: 24px; text-align: center;
+      font-family: 'DM Sans', monospace; font-size: 12px; color: var(--muted);
+    }
+    .dl-note a { color: var(--indigo); }
+    .dl-note a:hover { text-decoration: underline; }
+
+    /* ── FAQ ── */
+    .faq-section { padding: 48px 0 80px; }
+    .faq-list { display: flex; flex-direction: column; gap: 10px; max-width: 760px; }
+    .faq-item {
+      background: var(--glass); border: 1px solid var(--glass-b);
+      backdrop-filter: blur(12px); border-radius: 12px;
+      overflow: hidden; transition: border-color 250ms;
+    }
+    .faq-item:hover { border-color: var(--border-v); }
+    .faq-q {
+      padding: 18px 20px; display: flex; align-items: center; justify-content: space-between;
+      gap: 16px; cursor: pointer; user-select: none;
+      font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 600; color: var(--on-bg);
+    }
+    .faq-chevron {
+      width: 20px; height: 20px; flex-shrink: 0; color: var(--muted);
+      transition: transform 300ms;
+    }
+    .faq-item.open .faq-chevron { transform: rotate(180deg); }
+    .faq-a {
+      max-height: 0; overflow: hidden; transition: max-height 350ms ease;
+    }
+    .faq-item.open .faq-a { max-height: 200px; }
+    .faq-a-inner {
+      padding: 0 20px 18px;
+      font-size: 14px; line-height: 1.75; color: var(--on-surface);
       border-top: 1px solid var(--border);
+      padding-top: 14px;
+    }
+    .faq-a-inner code {
+      font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      background: var(--surface-e); border: 1px solid var(--border-v);
+      padding: 1px 5px; border-radius: 4px; color: var(--indigo);
     }
 
-    /* ── Animations ────────────────────────────────────────────────────────── */
-    @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(20px); }
-      to   { opacity: 1; transform: translateY(0); }
+    /* ── CONTACT ── */
+    .contact-section { padding: 48px 0 80px; border-top: 1px solid var(--border); }
+    .contact-layout { display: grid; grid-template-columns: 3fr 2fr; gap: 48px; margin-top: 8px; }
+
+    /* Newsletter */
+    .nl-card {
+      background: var(--glass); border: 1px solid var(--border-v);
+      backdrop-filter: blur(16px); border-radius: 16px; padding: 36px;
+      position: relative; overflow: hidden;
+      box-shadow: 0 0 32px rgba(99,102,241,0.1);
+    }
+    .nl-card::after {
+      content: ''; position: absolute; top: -80px; right: -80px;
+      width: 280px; height: 280px;
+      background: radial-gradient(circle, rgba(99,102,241,0.1) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .nl-label {
+      font-family: 'DM Sans', monospace; font-size: 11px; font-weight: 600;
+      color: var(--indigo); text-transform: uppercase; letter-spacing: 0.14em; margin-bottom: 12px;
+    }
+    .nl-title {
+      font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 24px;
+      color: var(--on-bg); margin-bottom: 8px; letter-spacing: -0.02em;
+    }
+    .nl-sub { font-size: 14px; color: var(--on-surface); line-height: 1.7; margin-bottom: 24px; }
+    .nl-row { display: flex; gap: 10px; }
+    .nl-input {
+      flex: 1; background: var(--surface-e); border: 1px solid var(--border-v);
+      border-radius: 10px; padding: 11px 16px;
+      font-family: 'DM Sans', sans-serif; font-size: 14px; color: var(--on-bg);
+      outline: none; transition: border-color 200ms, box-shadow 200ms;
+    }
+    .nl-input::placeholder { color: var(--muted); }
+    .nl-input:focus { border-color: var(--indigo); box-shadow: 0 0 0 3px rgba(99,102,241,0.12); }
+    .nl-submit {
+      padding: 11px 22px; border: none; border-radius: 10px; cursor: pointer;
+      font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 600;
+      background: linear-gradient(135deg, var(--indigo), var(--purple)); color: #fff;
+      white-space: nowrap; transition: opacity 200ms, transform 200ms;
+    }
+    .nl-submit:hover { opacity: 0.9; transform: translateY(-1px); }
+    .nl-note { margin-top: 10px; font-family: 'DM Sans', monospace; font-size: 11px; color: var(--muted); }
+    .nl-status { margin-top: 10px; font-size: 13px; display: none; font-family: 'DM Sans', monospace; }
+    .nl-status.ok { color: var(--success); display: block; }
+    .nl-status.err { color: var(--error); display: block; }
+
+    /* Contact links */
+    .contact-links { display: flex; flex-direction: column; gap: 12px; padding-top: 4px; }
+    .contact-link {
+      display: flex; align-items: center; gap: 14px;
+      background: var(--glass); border: 1px solid var(--glass-b);
+      backdrop-filter: blur(8px); border-radius: 12px; padding: 14px 18px;
+      transition: border-color 200ms, transform 200ms; cursor: pointer;
+      text-decoration: none;
+    }
+    .contact-link:hover { border-color: var(--border-v); transform: translateX(4px); }
+    .contact-link-icon {
+      width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+      background: var(--indigo-dim); border: 1px solid var(--border-v);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .contact-link-lbl { font-size: 13px; font-weight: 600; color: var(--on-bg); }
+    .contact-link-val { font-family: 'DM Sans', monospace; font-size: 11px; color: var(--muted); margin-top: 1px; }
+
+    /* ── FOOTER ── */
+    footer {
+      background: var(--bg2); border-top: 1px solid var(--border);
+      padding: 32px 40px; position: relative; z-index: var(--z-base);
+    }
+    .footer-inner {
+      max-width: 1100px; margin: 0 auto;
+      display: flex; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; gap: 20px;
+    }
+    .footer-brand { display: flex; align-items: center; gap: 10px; }
+    .footer-logo { width: 24px; height: 24px; border-radius: 6px; object-fit: cover; }
+    .footer-wordmark {
+      font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px;
+      background: linear-gradient(135deg, var(--indigo), var(--purple));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .footer-meta { font-family: 'DM Sans', monospace; font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .footer-links { display: flex; gap: 24px; list-style: none; flex-wrap: wrap; }
+    .footer-links a {
+      font-family: 'DM Sans', monospace; font-size: 11px; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--muted); transition: color 200ms;
+    }
+    .footer-links a:hover { color: var(--indigo); }
+
+    /* ── SCROLL REVEAL ── */
+    .reveal {
+      opacity: 0; transform: translateY(24px);
+      transition: opacity 600ms ease, transform 600ms ease;
+    }
+    .reveal.visible { opacity: 1; transform: translateY(0); }
+
+    @media (prefers-reduced-motion: reduce) {
+      .aurora-blob, .marquee-track,
+      .hero-badge-dot, .blink-dot, .gtk-bar-fill,
+      .reveal { animation: none !important; transition: none !important; opacity: 1 !important; transform: none !important; }
     }
 
-    /* ── Responsive ────────────────────────────────────────────────────────── */
-    @media (max-width: 860px) {
-      nav { padding: 0 20px; }
-      .nav-link { display: none; }
-      .features-grid { grid-template-columns: 1fr 1fr; }
-      .steps { grid-template-columns: 1fr; }
-      .step-line { display: none; }
-      .download-grid { grid-template-columns: 1fr; }
-      .subscribe-form { flex-direction: column; }
-      footer { flex-direction: column; text-align: center; }
+    /* ── RESPONSIVE ── */
+    @media (max-width: 1024px) {
+      .hero { grid-template-columns: 1fr; gap: 56px; }
+      .hero-left { max-width: 100%; }
+      .how-layout { grid-template-columns: 1fr; }
+      .contact-layout { grid-template-columns: 1fr; }
+      .tablet-frame { max-width: 1080px; margin: 0 auto; }
     }
-    @media (max-width: 560px) {
-      .features-grid { grid-template-columns: 1fr; }
-      .diagram { flex-direction: column; gap: 4px; }
-      .cable { flex-direction: row; }
-      .cable-track { width: 80px; transform: rotate(90deg); }
-      .stats-strip { flex-direction: column; align-items: center; }
-      .stat-item { max-width: 100%; width: 100%; border-radius: 0 !important; border: 1px solid var(--border) !important; margin-bottom: -1px; }
-      .subscribe-box { padding: 36px 24px; }
+    @media (max-width: 768px) {
+      .container { padding: 0 24px; }
+      .nav-links, .btn-ghost { display: none; }
+      .hero { padding: 40px 0 60px; }
+      .hero-h1 { font-size: 38px; }
+      .bento { grid-template-columns: 1fr; }
+      .bento-card.wide, .bento-card.tall { grid-column: 1; grid-row: auto; }
+      .stats-grid { grid-template-columns: 1fr 1fr; }
+      .dl-grid { grid-template-columns: 1fr; }
+      .tablet-frame { max-width: 100%; }
+      .hero-stat-float { display: none; }
+      .app-shots-grid { grid-template-columns: repeat(2, 1fr); }
+      footer { padding: 24px; }
+      nav { border-radius: 12px; }
+    }
+    @media (max-width: 480px) {
+      .nl-row { flex-direction: column; }
+      .stats-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
-
 <body>
 
-  <!-- ── Nav ────────────────────────────────────────────────────────────────── -->
+<!-- Aurora -->
+<div class="aurora" aria-hidden="true">
+  <div class="aurora-blob ab1"></div>
+  <div class="aurora-blob ab2"></div>
+  <div class="aurora-blob ab3"></div>
+</div>
+
+<!-- ── NAV ── -->
+<div class="nav-wrap">
   <nav>
-    <div class="nav-logo">
-      TetherLink<span> / v1.0.0</span>
-    </div>
-    <div class="nav-links">
-      <a href="#features" class="nav-link">Features</a>
-      <a href="#download" class="nav-link">Download</a>
-      <a href="#subscribe" class="nav-link">Updates</a>
-      <a href="https://github.com/princesavsaviya/TetherLink" target="_blank" class="nav-cta">GitHub →</a>
+    <a href="#" class="nav-brand">
+      <img src="TethrLink.png" alt="TethrLink" class="nav-logo"/>
+      <span class="nav-wordmark">TethrLink</span>
+    </a>
+    <ul class="nav-links">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#how-it-works">How it works</a></li>
+      <li><a href="#download">Download</a></li>
+      <li><a href="https://github.com/princesavsaviya/TethrLink" target="_blank" rel="noopener">GitHub</a></li>
+      <li><a href="#contact">Contact</a></li>
+    </ul>
+    <div class="nav-actions">
+      <a href="https://github.com/princesavsaviya/TethrLink" target="_blank" rel="noopener" class="btn-ghost">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844a9.59 9.59 0 012.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
+        Source
+      </a>
+      <a href="#download" class="btn-primary">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download
+      </a>
     </div>
   </nav>
+</div>
 
-  <!-- ── Hero ───────────────────────────────────────────────────────────────── -->
-  <div class="hero">
-    <div class="hero-badge">v1.0.0 — now available</div>
+<!-- ── MAIN ── -->
+<main>
 
-    <h1 class="hero-title">
-      Your Android tablet is<br>
-      <em>your second monitor.</em>
-    </h1>
+  <!-- HERO -->
+  <section class="container">
+    <div class="hero">
 
-    <p class="hero-sub">
-      TetherLink streams a virtual Linux display to your Android tablet
-      over a USB cable. No Wi-Fi. No cloud. ~47 ms end-to-end.
+      <div class="hero-left">
+        <div class="hero-badge">
+          <div class="hero-badge-dot"></div>
+          <span>v1.0.0 Stable — USB Tethering</span>
+        </div>
+
+        <h1 class="hero-h1">
+          Your tablet.<br/>
+          Your <span class="grad-text">second screen.</span><br/>
+          Zero Wi-Fi.
+        </h1>
+
+        <p class="hero-sub">
+          TethrLink turns any Android device into a wired secondary display for Linux.
+          Private <code>192.168.42.x</code> USB subnet. ~47&nbsp;ms end-to-end latency.
+          No accounts, no cloud, no compromise.
+        </p>
+
+        <div class="hero-actions">
+          <a href="#download" class="hero-cta">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Get TethrLink
+          </a>
+          <a href="https://github.com/princesavsaviya/TethrLink" target="_blank" rel="noopener" class="hero-cta-outline">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844a9.59 9.59 0 012.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
+            View Source
+          </a>
+        </div>
+
+        <div class="hero-trust">
+          <div class="hero-trust-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+            GPL v3 Open Source
+          </div>
+          <div class="hero-trust-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+            No telemetry
+          </div>
+          <div class="hero-trust-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Linux native
+          </div>
+        </div>
+      </div>
+
+      <!-- HERO VISUAL — actual stream screenshot -->
+      <div class="hero-right">
+        <div class="hero-stat-float">
+          <div class="stat-chip">
+            <span class="stat-chip-lbl">E2E Latency</span>
+            <span class="stat-chip-val">47<span class="u">ms</span></span>
+          </div>
+        </div>
+
+        <div class="tablet-frame">
+          <div class="tablet-frame-border">
+            <img
+              src="S5_Connected.jpeg"
+              alt="Linux desktop streaming to Android tablet at 45 FPS via TethrLink"
+              style="width:100%;height:auto;display:block;"
+            />
+            <div class="fps-badge">
+              <div class="fps-badge-dot"></div>
+              45 FPS Live
+            </div>
+            <div class="stream-badge">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="2" stroke-linecap="round"><path d="M5 12.55a11 11 0 0114.08 0"/><path d="M1.42 9a16 16 0 0121.16 0"/><path d="M8.53 16.11a6 6 0 016.95 0"/><circle cx="12" cy="20" r="1" fill="#6366F1"/></svg>
+              Streaming via USB · 192.168.42.x
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- MARQUEE STRIP -->
+  <div class="marquee-wrap" aria-hidden="true">
+    <div class="marquee-track">
+      <!-- First copy -->
+      <span class="marquee-item highlight">USB Tethering</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item">~47 ms Latency</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item highlight">45 FPS Streaming</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item">JPEG Codec</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item highlight">GStreamer Encoding</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item">192.168.42.x Subnet</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item highlight">GTK4 Desktop App</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item">Zero Cloud Dependency</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item highlight">GPL v3 Open Source</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item">Mutter ScreenCast API</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <!-- Duplicate for seamless loop -->
+      <span class="marquee-item highlight">USB Tethering</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item">~47 ms Latency</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item highlight">45 FPS Streaming</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item">JPEG Codec</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item highlight">GStreamer Encoding</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item">192.168.42.x Subnet</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item highlight">GTK4 Desktop App</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item">Zero Cloud Dependency</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item highlight">GPL v3 Open Source</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+      <span class="marquee-item">Mutter ScreenCast API</span>
+      <span class="marquee-item"><span class="marquee-dot"></span></span>
+    </div>
+  </div>
+
+  <!-- APP SCREENSHOTS -->
+  <section class="screenshots-section container">
+    <div class="section-head reveal" style="margin-bottom:32px">
+      <span class="section-eyebrow">The Android App</span>
+      <h2>Four steps to your second screen</h2>
+      <div class="section-accent"></div>
+    </div>
+    <div class="app-shots-grid reveal">
+      <div class="app-shot">
+        <div class="app-shot-frame">
+          <img src="S1.jpeg" alt="Step 1: USB-C Connection — plug cable and wait for detection" loading="lazy"/>
+        </div>
+        <div class="app-shot-lbl">
+          <span class="app-shot-num">01</span>
+          <span>USB-C Connection</span>
+        </div>
+      </div>
+      <div class="app-shot">
+        <div class="app-shot-frame">
+          <img src="S2.jpeg" alt="Step 2: Enable USB Tethering in Android network settings" loading="lazy"/>
+        </div>
+        <div class="app-shot-lbl">
+          <span class="app-shot-num">02</span>
+          <span>Enable USB Tethering</span>
+        </div>
+      </div>
+      <div class="app-shot">
+        <div class="app-shot-frame">
+          <img src="S3.jpeg" alt="Step 3: Scanning for Linux server via UDP broadcast on 192.168.42.x" loading="lazy"/>
+        </div>
+        <div class="app-shot-lbl">
+          <span class="app-shot-num">03</span>
+          <span>Scan for Server</span>
+        </div>
+      </div>
+      <div class="app-shot">
+        <div class="app-shot-frame">
+          <img src="S4.jpeg" alt="Step 4: Server found — Start Extending the display" loading="lazy"/>
+        </div>
+        <div class="app-shot-lbl">
+          <span class="app-shot-num">04</span>
+          <span>Server Connected</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- STATS -->
+  <section class="stats-section container reveal">
+    <div class="stats-grid">
+      <div class="stat-cell">
+        <span class="stat-lbl">End-to-End Latency</span>
+        <span class="stat-val"><span class="counter" data-target="47">0</span><span class="u">ms</span></span>
+        <span class="stat-sub">USB point-to-point</span>
+      </div>
+      <div class="stat-cell">
+        <span class="stat-lbl">Frame Rate</span>
+        <span class="stat-val"><span class="counter" data-target="45">45</span><span class="u p">fps</span></span>
+        <span class="stat-sub">Sustained JPEG</span>
+      </div>
+      <div class="stat-cell">
+        <span class="stat-lbl">Throughput</span>
+        <span class="stat-val"><span class="counter" data-target="40">0</span><span class="u">Mb/s</span></span>
+        <span class="stat-sub">USB 2.0 tethering</span>
+      </div>
+      <div class="stat-cell">
+        <span class="stat-lbl">Transport</span>
+        <span class="stat-val" style="font-size:28px">TCP<span class="u" style="font-size:16px">/USB</span></span>
+        <span class="stat-sub">Private subnet only</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features" class="features-section container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow">System Parameters</span>
+      <h2>Built for speed.<br/>Designed for privacy.</h2>
+      <div class="section-accent"></div>
+      <p>Every component of TethrLink is engineered around one principle: your display data never leaves your physical desk.</p>
+    </div>
+
+    <div class="bento">
+
+      <!-- Wide: Pipeline -->
+      <div class="bento-card wide reveal">
+        <div style="display:flex;align-items:flex-start;gap:18px">
+          <div class="bento-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="1.8" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          </div>
+          <div>
+            <h3>Direct Hardware Pipeline</h3>
+            <div class="bento-tags" style="margin-top:10px">
+              <span class="bento-tag">GStreamer</span>
+              <span class="bento-tag">JPEG</span>
+              <span class="bento-tag">TCP/USB</span>
+              <span class="bento-tag">1–5 ms RTT</span>
+            </div>
+          </div>
+        </div>
+        <p>Frames are encoded by GStreamer hardware-accelerated pipeline and pushed over a private USB tethering subnet. No router, no Wi-Fi jitter, no cloud relay. Pure point-to-point at 1–5 ms USB RTT with sub-50 ms end-to-end latency.</p>
+      </div>
+
+      <!-- Zero Cloud -->
+      <div class="bento-card reveal">
+        <div class="bento-icon p">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" stroke-width="1.8" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>Zero Cloud Dependency</h3>
+        <p>No accounts. No telemetry. No remote servers. Settings persist locally. Your stream never leaves your desk.</p>
+        <div class="bento-code-block">
+          <span class="c">~/.config/TethrLink/</span><br/>
+          <span class="k">settings</span><span class="s">.json</span>
+        </div>
+      </div>
+
+      <!-- Configurable -->
+      <div class="bento-card reveal">
+        <div class="bento-icon c">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22D3EE" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14"/><path d="M4.93 4.93a10 10 0 000 14.14"/></svg>
+        </div>
+        <h3>Configurable Output</h3>
+        <p>Switch FPS and quality at runtime without dropping the stream. Set virtual display position and resolution from the GTK4 app.</p>
+        <div class="bento-code-block">
+          <span class="k">Codec:</span> <span class="v">JPEG</span><br/>
+          <span class="k">FPS:</span>   <span class="v">30</span> <span class="c">| 45 | 60</span><br/>
+          <span class="k">Res:</span>   <span class="v">720p</span> <span class="c">| 1080p | 1440p</span>
+        </div>
+      </div>
+
+      <!-- Auto Discovery -->
+      <div class="bento-card reveal">
+        <div class="bento-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        </div>
+        <h3>Auto Discovery</h3>
+        <p>The Android app finds your Linux server automatically over UDP broadcast on the USB subnet. No IP address to type — just open and connect.</p>
+      </div>
+
+      <!-- Low Overhead -->
+      <div class="bento-card reveal">
+        <div class="bento-icon p">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </div>
+        <h3>Low Overhead</h3>
+        <p>Hardware-accelerated encoding keeps CPU usage minimal. The server runs quietly as a GTK4 system-tray icon while you work.</p>
+      </div>
+
+      <!-- Wide: Mutter ScreenCast API with pipeline diagram -->
+      <div class="bento-card wide reveal" style="flex-direction:row;gap:32px;align-items:stretch">
+        <!-- Left: text + code -->
+        <div style="flex:1;display:flex;flex-direction:column;gap:18px;min-width:0">
+          <div style="display:flex;align-items:flex-start;gap:16px">
+            <div class="bento-icon c" style="flex-shrink:0">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22D3EE" stroke-width="1.8" stroke-linecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            </div>
+            <div>
+              <h3>Mutter ScreenCast API</h3>
+              <p style="margin-top:8px">Virtual display creation uses the Mutter ScreenCast D-Bus API — the same mechanism GNOME uses internally, giving TethrLink a rock-solid display abstraction with no kernel module required.</p>
+            </div>
+          </div>
+          <div class="bento-code-block">
+<span class="c"># Start a 1920×1080 virtual display</span>
+<span class="k">$</span> <span class="v">TethrLink</span> <span class="s">--resolution 1920x1080 --position right</span>
+<span class="c">◆ Virtual display: ID=2 · 1920×1080 (right of primary)</span>
+<span class="c">◆ TCP server: 192.168.42.129:8080 · UDP: :5005</span>
+<span class="v">◆ Stream active — 45 FPS · 37.2 Mbps · 47 ms</span>
+          </div>
+        </div>
+      </div>
+      <div class="bento-card reveal">
+        <!-- Right: pipeline diagram -->
+        <div style="width:220px;flex-shrink:0;display:flex;flex-direction:column;justify-content:center;gap:0">
+          <div style="font-family:'DM Sans',monospace;font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.12em;margin-bottom:16px">Stream Pipeline</div>
+          <!-- Node 1 -->
+          <div style="background:rgba(34,211,238,0.07);border:1px solid rgba(34,211,238,0.25);border-radius:10px;padding:10px 14px">
+            <div style="font-size:10px;font-weight:700;color:#22D3EE;font-family:'Space Grotesk',sans-serif">Mutter ScreenCast</div>
+            <div style="font-size:10px;color:var(--muted);font-family:'DM Sans',monospace;margin-top:2px">D-Bus API · Virtual Display</div>
+          </div>
+          <!-- Arrow -->
+          <div style="display:flex;flex-direction:column;align-items:center;padding:4px 0;gap:1px">
+            <div style="width:1px;height:10px;background:rgba(99,102,241,0.35)"></div>
+            <svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M5 6L0 0h10L5 6z" fill="rgba(99,102,241,0.5)"/></svg>
+          </div>
+          <!-- Node 2 -->
+          <div style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.25);border-radius:10px;padding:10px 14px">
+            <div style="font-size:10px;font-weight:700;color:var(--indigo);font-family:'Space Grotesk',sans-serif">GStreamer Encoder</div>
+            <div style="font-size:10px;color:var(--muted);font-family:'DM Sans',monospace;margin-top:2px">JPEG · HW-accelerated</div>
+          </div>
+          <!-- Arrow -->
+          <div style="display:flex;flex-direction:column;align-items:center;padding:4px 0;gap:1px">
+            <div style="width:1px;height:10px;background:rgba(99,102,241,0.35)"></div>
+            <svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M5 6L0 0h10L5 6z" fill="rgba(99,102,241,0.5)"/></svg>
+          </div>
+          <!-- Node 3 -->
+          <div style="background:rgba(139,92,246,0.07);border:1px solid rgba(139,92,246,0.25);border-radius:10px;padding:10px 14px">
+            <div style="font-size:10px;font-weight:700;color:var(--purple);font-family:'Space Grotesk',sans-serif">TCP Socket</div>
+            <div style="font-size:10px;color:var(--muted);font-family:'DM Sans',monospace;margin-top:2px">192.168.42.x · Port 8080</div>
+          </div>
+          <!-- Arrow -->
+          <div style="display:flex;flex-direction:column;align-items:center;padding:4px 0;gap:1px">
+            <div style="width:1px;height:10px;background:rgba(99,102,241,0.35)"></div>
+            <svg width="10" height="6" viewBox="0 0 10 6" fill="none"><path d="M5 6L0 0h10L5 6z" fill="rgba(99,102,241,0.5)"/></svg>
+          </div>
+          <!-- Node 4 -->
+          <div style="background:rgba(74,222,128,0.07);border:1px solid rgba(74,222,128,0.25);border-radius:10px;padding:10px 14px">
+            <div style="font-size:10px;font-weight:700;color:var(--green);font-family:'Space Grotesk',sans-serif">Android Renderer</div>
+            <div style="font-size:10px;color:var(--muted);font-family:'DM Sans',monospace;margin-top:2px">Decode · Display · ~47 ms</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how-it-works" class="how-section container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow">Initialization Protocol</span>
+      <h2>Up and running<br/>in three steps.</h2>
+      <div class="section-accent"></div>
+    </div>
+
+    <div class="how-layout">
+      <div class="how-steps">
+        <div class="how-step reveal">
+          <div class="how-num">01</div>
+          <div class="how-step-body">
+            <h4>Enable USB Tethering on Android</h4>
+            <p>Connect the USB cable to your Linux PC. On Android, go to <strong>Settings → Network → Hotspot &amp; Tethering → USB Tethering</strong>. This creates the private <code>192.168.42.x</code> subnet between your devices.</p>
+          </div>
+        </div>
+
+        <div class="how-step reveal">
+          <div class="how-num">02</div>
+          <div class="how-step-body">
+            <h4>Start the Linux server</h4>
+            <p>Install the <code>.deb</code> package and launch <code>TethrLink</code>. Open the Dashboard tab and click <strong>Start Server</strong>. A virtual display is created instantly via the Mutter ScreenCast API — no reboot needed.</p>
+          </div>
+        </div>
+
+        <div class="how-step reveal">
+          <div class="how-num">03</div>
+          <div class="how-step-body">
+            <h4>Open the Android app &amp; connect</h4>
+            <p>Install the APK. The app discovers your server automatically via UDP broadcast — no IP to type. The virtual display appears on the tablet within seconds. Drag windows across like any real monitor.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Terminal -->
+      <div class="terminal reveal">
+        <div class="term-bar">
+          <div class="term-dots">
+            <div class="tdot r"></div>
+            <div class="tdot a"></div>
+            <div class="tdot g"></div>
+          </div>
+          <span class="term-title">prince@workstation — bash</span>
+          <div style="width:48px"></div>
+        </div>
+        <div class="term-body" id="term-output"><span class="t-prompt">prince@workstation</span>:<span style="color:#8B5CF6">~</span>$ <span id="term-cmd"></span>
+</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DOWNLOAD -->
+  <section id="download" class="dl-section container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow">Acquire Binaries</span>
+      <h2>Download TethrLink</h2>
+      <div class="section-accent"></div>
+      <p>Optimised for Debian/Ubuntu. The Android APK auto-connects via UDP discovery — no pairing code needed.</p>
+    </div>
+
+    <div class="dl-grid reveal">
+      <!-- Linux -->
+      <div class="dl-card primary">
+        <div class="dl-card-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </div>
+        <div class="dl-name">Linux Server</div>
+        <div class="dl-meta">v1.0.0 · .deb package · Ubuntu / Debian</div>
+        <a href="https://github.com/princesavsaviya/TethrLink/releases/download/v1.0.0/tethrlink_1.0.0_all-server.zip"
+           class="dl-btn main">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download Linux .deb (.zip)
+        </a>
+      </div>
+
+      <!-- Android -->
+      <div class="dl-card secondary">
+        <div class="dl-card-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" stroke-width="1.6" stroke-linecap="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+        </div>
+        <div class="dl-name">Android Client</div>
+        <div class="dl-meta">v1.0.0 · .apk · Android 8.0+</div>
+        <a href="https://github.com/princesavsaviya/TethrLink/releases/download/v1.0.0/tethrlink_1.0.0_all-android.zip"
+           class="dl-btn alt">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download Android .apk (.zip)
+        </a>
+      </div>
+    </div>
+
+    <p class="dl-note reveal">
+      All releases →
+      <a href="https://github.com/princesavsaviya/TethrLink/releases" target="_blank" rel="noopener">GitHub Releases</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/princesavsaviya/TethrLink#installation" target="_blank" rel="noopener">Build from source (Arch / Fedora)</a>
+      &nbsp;·&nbsp; GPL v3
     </p>
+  </section>
 
-    <!-- Connection diagram -->
-    <div class="diagram" aria-hidden="true">
-      <div class="device-box">
-        <div class="device-icon">🖥️</div>
-        <div class="device-label">LINUX PC</div>
-        <div class="device-status">streaming</div>
-      </div>
+  <!-- FAQ -->
+  <section class="faq-section container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow">FAQ</span>
+      <h2>Common questions</h2>
+      <div class="section-accent"></div>
+    </div>
 
-      <div class="cable">
-        <div class="cable-label">USB-C</div>
-        <div class="cable-track">
-          <div class="cable-line"></div>
-          <div class="packet"></div>
-          <div class="packet"></div>
-          <div class="packet"></div>
+    <div class="faq-list">      
+      <div class="faq-item reveal">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Does it work without Wi-Fi?
+          <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
-        <div class="cable-stats">
-          <div class="cable-stat live">45 FPS</div>
-          <div class="cable-stat live">~47ms</div>
+        <div class="faq-a">
+          <div class="faq-a-inner">Yes — that's the entire point. TethrLink uses Android's USB tethering feature which creates a private <code>192.168.42.x</code> network directly over the USB cable. No Wi-Fi, no router, no internet required.</div>
         </div>
       </div>
 
-      <div class="device-box tablet">
-        <div class="device-icon">📱</div>
-        <div class="device-label">TABLET</div>
-        <div class="device-status">connected</div>
+      <div class="faq-item reveal">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Which Linux desktop environments are supported?
+          <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="faq-a">
+          <div class="faq-a-inner">TethrLink uses the Mutter ScreenCast D-Bus API, which is available on GNOME (Wayland). Ubuntu 22.04+, Fedora 37+, and any GNOME Wayland session work out of the box. X11 and non-GNOME desktops are not currently supported.</div>
+        </div>
       </div>
-    </div>
 
-    <!-- Download CTAs -->
-    <div class="hero-actions">
-      <a href="https://github.com/user-attachments/files/26881418/tetherlink-linux-v1.0.0.zip"
-         class="btn btn-primary" id="download">
-        <span class="btn-icon">🐧</span>
-        <span class="btn-text">
-          <span class="btn-label">Download for Linux</span>
-          <span class="btn-sub">.deb — Debian / Ubuntu</span>
-        </span>
-      </a>
-      <a href="https://github.com/user-attachments/files/26881418/tetherlink-android-v1.0.0.zip"
-         class="btn btn-secondary">
-        <span class="btn-icon">🤖</span>
-        <span class="btn-text">
-          <span class="btn-label">Download for Android</span>
-          <span class="btn-sub">APK — Android 8.0+</span>
-        </span>
-      </a>
-    </div>
-  </div>
+      <div class="faq-item reveal">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          What Android version is required?
+          <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="faq-a">
+          <div class="faq-a-inner">Android 8.0 (Oreo) or later. USB tethering must be supported by your device — it's available on virtually all Android phones and tablets from 2017 onwards.</div>
+        </div>
+      </div>
 
-  <!-- ── Stats strip ─────────────────────────────────────────────────────────── -->
-  <div class="stats-strip">
-    <div class="stat-item">
-      <div class="stat-number">47<span class="unit"> ms</span></div>
-      <div class="stat-desc">End-to-end latency</div>
-    </div>
-    <div class="stat-item">
-      <div class="stat-number">45<span class="unit"> fps</span></div>
-      <div class="stat-desc">Smooth frame rate</div>
-    </div>
-    <div class="stat-item">
-      <div class="stat-number">40<span class="unit"> Mbps</span></div>
-      <div class="stat-desc">USB throughput</div>
-    </div>
-    <div class="stat-item">
-      <div class="stat-number">0<span class="unit"> Wi-Fi</span></div>
-      <div class="stat-desc">Direct USB only</div>
-    </div>
-  </div>
+      <div class="faq-item reveal">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          What codec does TethrLink use?
+          <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="faq-a">
+          <div class="faq-a-inner">TethrLink currently uses JPEG encoding via GStreamer for the video stream. JPEG keeps the pipeline simple and latency low. H.264 support is planned for a future release — subscribe to the newsletter to be notified when it lands.</div>
+        </div>
+      </div>
 
-  <div class="section-divider"><hr></div>
+      <div class="faq-item reveal">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Is touch input forwarded from the tablet?
+          <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="faq-a">
+          <div class="faq-a-inner">Not yet — touch input forwarding is on the roadmap for a future release. Subscribe to the newsletter below to be notified when it lands.</div>
+        </div>
+      </div>
 
-  <!-- ── Features ───────────────────────────────────────────────────────────── -->
-  <section id="features">
-    <div class="section-header">
-      <p class="section-label">Why TetherLink</p>
-      <h2 class="section-title">Everything a second monitor needs.<br>Nothing it doesn't.</h2>
-      <p class="section-sub">Built for Linux power users who want a reliable wired extension display without buying new hardware.</p>
-    </div>
+      <div class="faq-item reveal">
+        <div class="faq-q" onclick="toggleFaq(this)">
+          Only Screen Mirroring / No option for Extending ?
+          <svg class="faq-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="faq-a">
+          <div class="faq-a-inner">Probably You are using X11, switch to Wayland Ubuntu to get the Extend option.</div>
+        </div>
+      </div>
 
-    <div class="features-grid">
-      <div class="feature-card">
-        <span class="feature-icon">🔌</span>
-        <div class="feature-name">Zero-config USB transport</div>
-        <p class="feature-desc">Connects over the private 192.168.42.x USB tethering subnet. Plug in, flip USB Tethering on, done.</p>
-      </div>
-      <div class="feature-card">
-        <span class="feature-icon">🖼️</span>
-        <div class="feature-name">True virtual display</div>
-        <p class="feature-desc">Uses the Mutter ScreenCast D-Bus API to create an independent virtual screen — not a mirror, a real second display.</p>
-      </div>
-      <div class="feature-card">
-        <span class="feature-icon">⚡</span>
-        <div class="feature-name">Dual codec streaming</div>
-        <p class="feature-desc">Switch between JPEG and H.264 at runtime. Change FPS and quality live — no restart, no reconnect needed.</p>
-      </div>
-      <div class="feature-card">
-        <span class="feature-icon">🔍</span>
-        <div class="feature-name">Auto-discovery</div>
-        <p class="feature-desc">UDP broadcast means the Android app finds your server automatically. No IP addresses to type or remember.</p>
-      </div>
-      <div class="feature-card">
-        <span class="feature-icon">🎨</span>
-        <div class="feature-name">GTK4 desktop app</div>
-        <p class="feature-desc">Native Libadwaita UI with a system tray icon, live stats, display arrangement canvas, and persistent settings.</p>
-      </div>
-      <div class="feature-card">
-        <span class="feature-icon">📦</span>
-        <div class="feature-name">Single .deb install</div>
-        <p class="feature-desc">One apt install command, a desktop entry, and a system tray icon. Installs cleanly, uninstalls cleanly.</p>
-      </div>
     </div>
   </section>
 
-  <div class="section-divider"><hr></div>
-
-  <!-- ── How it works ────────────────────────────────────────────────────────── -->
-  <section id="setup">
-    <div class="section-header">
-      <p class="section-label">How it works</p>
-      <h2 class="section-title">Three steps to a second screen.</h2>
-      <p class="section-sub">No drivers to install, no network configuration, no account required.</p>
+  <!-- CONTACT & NEWSLETTER -->
+  <section id="contact" class="contact-section container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow">Stay Connected</span>
+      <h2>Stay in the loop</h2>
+      <div class="section-accent"></div>
     </div>
 
-    <div class="steps">
-      <div class="step">
-        <div class="step-line"></div>
-        <div class="step-title">Install on Linux</div>
-        <p class="step-desc">Install the .deb package on your Linux PC. TetherLink appears in your app launcher and system tray.</p>
-        <div class="step-code">sudo dpkg -i python3-tetherlink_1.0.0-1_all.deb</div>
-      </div>
-      <div class="step">
-        <div class="step-line"></div>
-        <div class="step-title">Enable USB Tethering</div>
-        <p class="step-desc">Connect your tablet via USB cable and turn on USB Tethering in Android Settings. The private subnet activates instantly.</p>
-        <div class="step-code">Settings → Hotspot & Tethering → USB Tethering</div>
-      </div>
-      <div class="step">
-        <div class="step-title">Open the app & connect</div>
-        <p class="step-desc">Launch TetherLink on your PC and press Start Server. Open the app on your tablet — it discovers and connects automatically.</p>
-        <div class="step-code">tetherlink  # or click the system tray icon</div>
-      </div>
-    </div>
-
-    <div class="terminal">
-      <div class="terminal-bar">
-        <div class="terminal-dot red"></div>
-        <div class="terminal-dot amber"></div>
-        <div class="terminal-dot green"></div>
-        <div class="terminal-title">tetherlink server log</div>
-      </div>
-      <div class="terminal-body">
-        <div><span class="t-dim">12:00:01</span> <span class="t-ok">INFO</span>  <span class="t-out">Server ready on port 51137</span></div>
-        <div><span class="t-dim">12:00:03</span> <span class="t-ok">INFO</span>  <span class="t-out">Detected primary monitor: 2560×1440</span></div>
-        <div><span class="t-dim">12:00:05</span> <span class="t-ok">INFO</span>  <span class="t-out">Incoming: Galaxy Tab S8 — screen 2560×1600</span></div>
-        <div><span class="t-dim">12:00:05</span> <span class="t-ok">INFO</span>  <span class="t-out">PipeWire node: 142</span></div>
-        <div><span class="t-dim">12:00:05</span> <span class="t-ok">INFO</span>  <span class="t-out">GStreamer pipeline playing (codec=JPEG)</span></div>
-        <div><span class="t-dim">12:00:06</span> <span class="t-prompt">●</span>    <span class="t-cmd">Streaming → Galaxy Tab S8 &nbsp; 45 FPS &nbsp; 2560×1440 &nbsp; JPEG</span></div>
-      </div>
-    </div>
-  </section>
-
-  <div class="section-divider"><hr></div>
-
-  <!-- ── Download ────────────────────────────────────────────────────────────── -->
-  <section>
-    <div class="section-header">
-      <p class="section-label">Download</p>
-      <h2 class="section-title">Get TetherLink v1.0.0</h2>
-      <p class="section-sub">Free and open source under the GNU GPL v3 license.</p>
-    </div>
-
-    <div class="download-grid">
-      <div class="download-card">
-        <div class="download-card-header">
-          <span class="download-platform-icon">🐧</span>
-          <div>
-            <div class="download-platform">Linux Server</div>
-            <div class="download-platform-sub">Debian / Ubuntu package</div>
+    <div class="contact-layout">
+      <!-- Newsletter -->
+      <div class="nl-card reveal">
+        <div class="nl-label">Newsletter</div>
+        <div class="nl-title">Get notified on new releases</div>
+        <p class="nl-sub">When touch input, audio, or Windows support lands — you'll know first. Release notes only. No spam, ever.</p>
+        <form id="nl-form" action="https://formspree.io/f/mvzdqqzo" method="POST">
+          <input type="hidden" name="_subject" value="TethrLink — notify me"/>
+          <div class="nl-row">
+            <input class="nl-input" type="email" name="email" placeholder="you@example.com" required aria-label="Email address"/>
+            <button class="nl-submit" type="submit">Notify me</button>
           </div>
-        </div>
-        <ul class="download-requirements">
-          <li>GNOME on Wayland (Mutter ScreenCast)</li>
-          <li>Python 3.10+, GTK4 + Libadwaita</li>
-          <li>GStreamer 1.0 with PipeWire</li>
-          <li>USB-C(Preffered) or USB-A cable</li>
-        </ul>
-        <a href="https://github.com/user-attachments/files/26881418/tetherlink-linux-v1.0.0.zip"
-           class="download-btn linux">
-          ↓ &nbsp; Download .deb
-        </a>
-        <div class="download-version">tetherlink-linux-v1.0.0.zip · ~98 KB</div>
+          <p class="nl-note">No account needed · Unsubscribe anytime</p>
+          <p class="nl-status" id="nl-status" role="status"></p>
+        </form>
       </div>
 
-      <div class="download-card">
-        <div class="download-card-header">
-          <span class="download-platform-icon">🤖</span>
-          <div>
-            <div class="download-platform">Android App</div>
-            <div class="download-platform-sub">Sideload APK</div>
-          </div>
+      <!-- Contact links -->
+      <div class="reveal">
+        <p style="font-size:14px;color:var(--on-surface);margin-bottom:20px;line-height:1.7">
+          Bug reports, feature requests, or just want to say the project saved your workflow — reach out directly or open a GitHub issue.
+        </p>
+        <div class="contact-links">
+          <a href="mailto:princesavsaviya.learning@gmail.com" class="contact-link">
+            <div class="contact-link-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="1.8" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+            </div>
+            <div>
+              <div class="contact-link-lbl">Email</div>
+              <div class="contact-link-val">princesavsaviya.learning@gmail.com</div>
+            </div>
+          </a>
+          <a href="https://github.com/princesavsaviya/TethrLink/issues" target="_blank" rel="noopener" class="contact-link">
+            <div class="contact-link-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="#6366F1"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.009-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.155-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844a9.59 9.59 0 012.504.337c1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
+            </div>
+            <div>
+              <div class="contact-link-lbl">GitHub Issues</div>
+              <div class="contact-link-val">github.com/princesavsaviya/TethrLink/issues</div>
+            </div>
+          </a>
+          <a href="https://github.com/princesavsaviya/TethrLink" target="_blank" rel="noopener" class="contact-link">
+            <div class="contact-link-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366F1" stroke-width="1.8" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            </div>
+            <div>
+              <div class="contact-link-lbl">Star on GitHub</div>
+              <div class="contact-link-val">Help others discover TethrLink</div>
+            </div>
+          </a>
         </div>
-        <ul class="download-requirements">
-          <li>Android 8.0+ (API 26)</li>
-          <li>USB Tethering support</li>
-          <li>USB-C or Micro-USB cable</li>
-          <li>Enable "Install unknown apps" once</li>
-        </ul>
-        <a href="https://github.com/user-attachments/files/26881424/tetherlink-android-v1.0.0.zip"
-          
-           class="download-btn android">
-          ↓ &nbsp; Download APK
-        </a>
-        <div class="download-version">tetherlink-android-v1.0.0.zip · ~13 MB · minSdk 26</div>
       </div>
     </div>
   </section>
 
-  <div class="section-divider"><hr></div>
+</main>
 
-  <!-- ── Subscribe ───────────────────────────────────────────────────────────── -->
-  <section id="subscribe">
-    <div class="subscribe-box">
-      <p class="section-label" style="margin-bottom:14px">Stay in the loop</p>
-      <h2 class="subscribe-title">Get notified when we ship.</h2>
-      <p class="subscribe-sub">Touch input, audio forwarding, Windows support — subscribe to be first to know.</p>
-
-      <form class="subscribe-form" id="subscribeForm"
-            action="https://formspree.io/f/mvzdqqzo"
-            method="POST">
-        <input type="email" name="email" class="subscribe-input"
-               placeholder="your@email.com" required autocomplete="email">
-        <input type="hidden" name="_subject" value="TetherLink — new subscriber">
-        <button type="submit" class="subscribe-submit" id="subscribeBtn">
-          Notify me
-        </button>
-      </form>
-
-      <p class="subscribe-note">No spam. Just release announcements.</p>
-      <p class="subscribe-msg" id="subscribeMsg"></p>
+<!-- FOOTER -->
+<footer> 
+  <div class="footer-inner">
+    <div>
+      <div class="footer-brand">
+        <img src="TethrLink.png" alt="" class="footer-logo"/>
+        <span class="footer-wordmark">TethrLink</span>
+      </div>
+      <div class="footer-meta">© 2025 Prince Savsaviya · v1.0.0-stable · GPL v3</div>
     </div>
-  </section>
+    <ul class="footer-links">
+      <li><a href="https://github.com/princesavsaviya/TethrLink" target="_blank" rel="noopener">GitHub</a></li>
+      <li><a href="https://github.com/princesavsaviya/TethrLink/releases" target="_blank" rel="noopener">Releases</a></li>
+      <li><a href="https://github.com/princesavsaviya/TethrLink/blob/main/README.md" target="_blank" rel="noopener">Docs</a></li>
+      <li><a href="https://github.com/princesavsaviya/TethrLink/blob/main/LICENSE" target="_blank" rel="noopener">License</a></li>
+      <li><a href="#contact">Contact</a></li>
+    </ul>
+  </div>
+</footer>
 
-  <!-- ── Footer ──────────────────────────────────────────────────────────────── -->
-  <footer>
-    <div class="footer-logo">TetherLink</div>
-    <div class="footer-copy">© 2026 Prince Savsaviya — GPL v3 License</div>
-    <div class="footer-links">
-      <a href="https://github.com/princesavsaviya/TetherLink" class="footer-link" target="_blank">GitHub</a>
-      <a href="https://github.com/princesavsaviya/TetherLink/releases" class="footer-link" target="_blank">Releases</a>
-      <a href="https://github.com/princesavsaviya/TetherLink/blob/main/LICENSE" class="footer-link" target="_blank">License</a>
-      <a href="mailto:princesavsaviya.learning@gmail.com" class="footer-link">Contact</a>
-    </div>
-  </footer>
-
-  <script>
-    // ── Scroll reveal ──────────────────────────────────────────────────────────
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach((e, i) => {
-        if (e.isIntersecting) {
-          // Stagger cards within the same parent
-          const siblings = Array.from(e.target.parentElement.children)
-            .filter(el => el.classList.contains(e.target.classList[0]) ||
-                          observer._targets.has(el));
-          const idx = siblings.indexOf(e.target);
-          setTimeout(() => e.target.classList.add('visible'), idx * 80);
-          observer.unobserve(e.target);
-        }
-      });
-    }, { threshold: 0.1 });
-    observer._targets = new Set();
-
-    document.querySelectorAll(
-      '.stat-item, .feature-card, .step, .download-card'
-    ).forEach(el => {
-      observer._targets.add(el);
-      observer.observe(el);
+<script>
+/* ── Newsletter form ── */
+document.getElementById('nl-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const status = document.getElementById('nl-status');
+  const btn = this.querySelector('.nl-submit');
+  btn.textContent = 'Sending…'; btn.disabled = true;
+  try {
+    const res = await fetch(this.action, {
+      method: 'POST', body: new FormData(this),
+      headers: { 'Accept': 'application/json' }
     });
+    if (res.ok) {
+      status.className = 'nl-status ok';
+      status.textContent = '✓ You\'re on the list. Updates incoming.';
+      this.reset();
+    } else {
+      const d = await res.json();
+      status.className = 'nl-status err';
+      status.textContent = d.error || 'Something went wrong — email me directly.';
+    }
+  } catch {
+    status.className = 'nl-status err';
+    status.textContent = 'Network error — email me directly.';
+  }
+  btn.textContent = 'Notify me'; btn.disabled = false;
+});
 
-    // ── Subscribe form ─────────────────────────────────────────────────────────
-    const form = document.getElementById('subscribeForm');
-    const btn  = document.getElementById('subscribeBtn');
-    const msg  = document.getElementById('subscribeMsg');
+/* ── FAQ accordion ── */
+function toggleFaq(btn) {
+  const item = btn.parentElement;
+  const wasOpen = item.classList.contains('open');
+  document.querySelectorAll('.faq-item.open').forEach(function(el) { el.classList.remove('open'); });
+  if (!wasOpen) item.classList.add('open');
+}
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      btn.disabled = true;
-      btn.textContent = 'Subscribing…';
-      msg.className = 'subscribe-msg';
-
-      try {
-        const res = await fetch(form.action, {
-          method: 'POST',
-          body: new FormData(form),
-          headers: { 'Accept': 'application/json' }
-        });
-        if (res.ok) {
-          msg.textContent = '✓ You\'re in! We\'ll email you when we ship.';
-          msg.className = 'subscribe-msg success';
-          form.reset();
-        } else {
-          const data = await res.json().catch(() => ({}));
-          const reason = data?.errors?.map(e => e.message).join(', ') || `Error ${res.status}`;
-          msg.textContent = `✗ ${reason}`;
-          msg.className = 'subscribe-msg error';
-        }
-      } catch (err) {
-        msg.textContent = `✗ ${err.message}`;
-        msg.className = 'subscribe-msg error';
-      } finally {
-        btn.disabled = false;
-        btn.textContent = 'Notify me';
+/* ── Scroll reveal ── */
+(function() {
+  const els = document.querySelectorAll('.reveal');
+  if (!window.IntersectionObserver) {
+    els.forEach(function(el) { el.classList.add('visible'); });
+    return;
+  }
+  const obs = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) {
+      if (e.isIntersecting) {
+        e.target.classList.add('visible');
+        obs.unobserve(e.target);
       }
     });
+  }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+  els.forEach(function(el) { obs.observe(el); });
+})();
 
-    // ── Smooth nav highlight ───────────────────────────────────────────────────
-    document.querySelectorAll('a[href^="#"]').forEach(a => {
-      a.addEventListener('click', e => {
-        const target = document.querySelector(a.getAttribute('href'));
-        if (target) {
-          e.preventDefault();
-          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-      });
+/* ── Counter animation ── */
+(function() {
+  const counters = document.querySelectorAll('.counter');
+  const obs = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) {
+      if (!e.isIntersecting) return;
+      const el = e.target;
+      const target = parseInt(el.dataset.target, 10);
+      let start = 0;
+      const duration = 1200;
+      const step = Math.ceil(target / (duration / 16));
+      const tick = setInterval(function() {
+        start = Math.min(start + step, target);
+        el.textContent = start;
+        if (start >= target) clearInterval(tick);
+      }, 16);
+      obs.unobserve(el);
     });
-  </script>
+  }, { threshold: 0.5 });
+  counters.forEach(function(c) { obs.observe(c); });
+})();
+
+/* ── Terminal typewriter ── */
+(function() {
+  var lines = [
+    { type: 'cmd', text: 'TethrLink' },
+    { type: 'blank' },
+    { type: 'line', html: '<span class="t-ok">◆</span> <span class="t-val">TethrLink v1.0.0</span>' },
+    { type: 'line', html: '  <span class="t-dim">Starting UDP discovery on :5005...</span>' },
+    { type: 'line', html: '  <span class="t-dim">Waiting for USB tethering interface...</span>' },
+    { type: 'line', html: '  <span class="t-key">Interface:     </span><span class="t-val">usb0 → 192.168.42.129</span>' },
+    { type: 'line', html: '  <span class="t-key">Virtual display:</span><span class="t-val"> 1920×1080 (right of primary)</span>' },
+    { type: 'line', html: '  <span class="t-key">Encoder:       </span><span class="t-val">GStreamer JPEG @ 45 FPS</span>' },
+    { type: 'line', html: '  <span class="t-key">TCP server:    </span><span class="t-val">192.168.42.129:8080</span>' },
+    { type: 'blank' },
+    { type: 'line', html: '  <span class="t-dim">Client connected: 192.168.42.254</span>' },
+    { type: 'blank' },
+    { type: 'line', html: '<span class="t-ok">◆</span> <span class="t-ok">Stream active — 45 FPS · 37.2 Mbps · 47 ms</span>' },
+    { type: 'blank' },
+    { type: 'cursor' },
+  ];
+
+  var output = document.getElementById('term-output');
+  var cmdSpan = document.getElementById('term-cmd');
+  var lineIndex = 0;
+  var charIndex = 0;
+  var started = false;
+
+  function startTypewriter() {
+    if (started) return;
+    started = true;
+    typeCmd();
+  }
+
+  function typeCmd() {
+    var cmd = 'TethrLink';
+    if (charIndex < cmd.length) {
+      cmdSpan.textContent += cmd[charIndex++];
+      setTimeout(typeCmd, 80);
+    } else {
+      setTimeout(function() { lineIndex = 1; addLines(); }, 300);
+    }
+  }
+
+  function addLines() {
+    if (lineIndex >= lines.length) return;
+    var l = lines[lineIndex++];
+    if (l.type === 'blank') {
+      output.innerHTML += '\n';
+    } else if (l.type === 'line') {
+      output.innerHTML += l.html + '\n';
+    } else if (l.type === 'cursor') {
+      output.innerHTML += '<span class="t-cur"></span>';
+      return;
+    }
+    setTimeout(addLines, 180);
+  }
+
+  /* Start when terminal is visible */
+  var termEl = document.getElementById('term-output');
+  if (!window.IntersectionObserver) { startTypewriter(); return; }
+  var obs = new IntersectionObserver(function(entries) {
+    if (entries[0].isIntersecting) { startTypewriter(); obs.disconnect(); }
+  }, { threshold: 0.3 });
+  obs.observe(termEl);
+})();
+</script>
+
 </body>
 </html>
