@@ -1,8 +1,8 @@
-# TetherLink
+# TethrLink
 
 > Turn your Android tablet into a wired second monitor for Linux — no Wi-Fi, no cloud, no latency spikes.
 
-TetherLink streams a virtual display from your Linux PC to an Android tablet over a direct USB tethering connection. The PC captures a dedicated virtual screen via the Mutter ScreenCast D-Bus API, encodes frames with GStreamer (JPEG or H.264), and pushes them over a private `192.168.42.x` USB subnet. The Android client decodes and renders them fullscreen in real time.
+TethrLink streams a virtual display from your Linux PC to an Android tablet over a direct USB tethering connection. The PC captures a dedicated virtual screen via the Mutter ScreenCast D-Bus API, encodes frames with GStreamer (JPEG or H.264), and pushes them over a private `192.168.42.x` USB subnet. The Android client decodes and renders them fullscreen in real time.
 
 **Measured end-to-end latency: ~47 ms at 30 FPS.**
 
@@ -35,7 +35,7 @@ Transport: private `192.168.42.x` subnet, ~1–5 ms RTT over USB cable.
 - **Hot-reload** — change FPS and JPEG quality live without restarting the stream
 - **UDP auto-discovery** — server broadcasts on port 8765, Android app connects without manual IP entry
 - **GTK4 + Libadwaita UI** — dark desktop app with three-tab dashboard and system tray integration
-- **Persistent settings** — saved to `~/.config/tetherlink/settings.json`
+- **Persistent settings** — saved to `~/.config/tethrlink/settings.json`
 - **Virtual display layout control** — position tablet above, below, left, or right of primary monitor
 - **Resolution presets** — 720p, 1080p, 1440p, or custom size; landscape or portrait orientation
 - **Auto-start** — optionally start the server on boot
@@ -171,7 +171,7 @@ The GTK4 app provides three tabs:
 | Encode / stream | GStreamer 1.0 (`jpegenc` / `x264enc` / `appsink`)        |
 | Transport       | TCP over USB tethering (`192.168.42.x` subnet)           |
 | Discovery       | UDP broadcast (port 8765)                                |
-| Settings        | JSON (`~/.config/tetherlink/settings.json`)              |
+| Settings        | JSON (`~/.config/tethrlink/settings.json`)               |
 | Android client  | Kotlin 1.9, Jetpack Compose, MediaCodec, Coroutines      |
 
 ---
@@ -179,7 +179,7 @@ The GTK4 app provides three tabs:
 ## Repository Layout
 
 ```
-TetherLink/
+TethrLink/
 ├── server/
 │   ├── app/
 │   │   └── main.py           # GTK4 application entry point
@@ -229,4 +229,4 @@ TetherLink/
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE) for details.
 
-TetherLink is free to use, modify, and distribute under GPL v3. If you distribute a modified version, you must release the source under the same license.
+TethrLink is free to use, modify, and distribute under GPL v3. If you distribute a modified version, you must release the source under the same license.
