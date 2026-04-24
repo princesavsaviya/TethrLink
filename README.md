@@ -14,9 +14,9 @@ TetherLink streams a virtual display from your Linux PC to an Android tablet ove
 ┌─────────────────────────────────────────┐        USB Tethering (192.168.42.x)
 │             Linux PC  (Server)          │
 │                                         │
-│  Mutter ScreenCast  → Virtual Display   │  TCP :8080  ┌──────────────────────┐
-│  GStreamer pipeline → JPEG / H.264      │ ──────────► │   Android Tablet     │
-│                     → [4B len][frame]   │             │                      │
+│  Mutter ScreenCast  → Virtual Display   │  TCP :51137  ┌──────────────────────┐
+│  GStreamer pipeline → JPEG / H.264      │ ───────────► │   Android Tablet     │
+│  UDP discovery broadcast                │             │                      │
 │  GTK4 + Libadwaita desktop UI           │             │  recv → decode       │
 │  pystray system tray                    │             │  → fullscreen render  │
 └─────────────────────────────────────────┘             └──────────────────────┘
@@ -28,13 +28,26 @@ Transport: private `192.168.42.x` subnet, ~1–5 ms RTT over USB cable.
 
 ## Features
 
-- **Zero-config transport** — USB tethering, no router, no Wi-Fi needed
-- **Independent virtual display** — tablet gets its own screen space via Mutter ScreenCast
-- **Dual codec** — software JPEG or GStreamer H.264, switchable at runtime
-- **Hot-reload** — change FPS and JPEG quality without restarting the stream
-- **GTK4 + Libadwaita UI** — dark desktop app with system tray integration
-- **UDP auto-discovery** — Android app finds the server without manual IP entry
+### Linux Server
+- **Zero-config transport** — USB tethering only, no router or Wi-Fi needed
+- **Independent virtual display** — tablet gets its own screen space via Mutter ScreenCast D-Bus API
+- **Dual codec** — software JPEG or GStreamer H.264 (x264enc), switchable at runtime
+- **Hot-reload** — change FPS and JPEG quality live without restarting the stream
+- **UDP auto-discovery** — server broadcasts on port 8765, Android app connects without manual IP entry
+- **GTK4 + Libadwaita UI** — dark desktop app with three-tab dashboard and system tray integration
 - **Persistent settings** — saved to `~/.config/tetherlink/settings.json`
+- **Virtual display layout control** — position tablet above, below, left, or right of primary monitor
+- **Resolution presets** — 720p, 1080p, 1440p, or custom size; landscape or portrait orientation
+- **Auto-start** — optionally start the server on boot
+
+### Android Client
+- **Guided setup flow** — walks through USB cable detection, tethering, scanning, and connection
+- **Auto-discovery** — listens for UDP broadcasts and populates server details automatically
+- **Fullscreen immersive rendering** — hides system UI; screen stays on during streaming
+- **Dual codec decoding** — JPEG via `BitmapFactory`, H.264 via `MediaCodec` async (low-latency mode)
+- **Overlay HUD** — tap to toggle FPS counter, resolution, codec, server name, and disconnect button
+- **Resolution & refresh rate selection** — choose 720p / 1080p / 1440p / 4K and 60 / 120 / 144 Hz before connecting
+- **Auto-reconnect** — reconnects with 2-second delay on stream interruption
 
 ---
 
@@ -57,10 +70,11 @@ Transport: private `192.168.42.x` subnet, ~1–5 ms RTT over USB cable.
 - Python 3.10+
 - GStreamer 1.0 with `gstreamer1.0-pipewire`, `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-bad`
 - GTK4 + Libadwaita (`gir1.2-gtk-4.0`, `gir1.2-adw-1`)
+- D-Bus bindings: `python3-gi`, `python3-dbus`
 
 **Android tablet:**
-- Android 8.0+ (API 26)
-- USB cable + USB Tethering enabled
+- Android 5.0+ (API 21)
+- USB cable with USB Tethering support
 
 ---
 
@@ -71,12 +85,19 @@ Transport: private `192.168.42.x` subnet, ~1–5 ms RTT over USB cable.
 Download the latest `.deb` from [Releases](https://github.com/princesavsaviya/TetherLink/releases) and install:
 
 ```bash
-sudo dpkg -i python3-tetherlink_1.0.0-1_all.deb
+sudo dpkg -i tethrlink_1.0.0_amd64.deb
 sudo apt-get install -f   # resolve any missing dependencies
-tetherlink
+tethrlink
 ```
 
-### Option 2 — Run from source
+### Option 2 — Snap package
+
+```bash
+snap install tethrlink_1.0.0_amd64.snap --dangerous
+tethrlink
+```
+
+### Option 3 — Run from source
 
 ```bash
 # Install system dependencies
@@ -95,17 +116,23 @@ pip install -r requirements.txt
 python -m server.app
 ```
 
+### Android APK
+
+Download `app-release.apk` from [Releases](https://github.com/princesavsaviya/TetherLink/releases) and install it on your tablet.
+
 ---
 
 ## Usage
 
 ### 1 — Start the server
 
-Run `tetherlink` (installed) or `python -m server.app` (from source).
+Run `tethrlink` (installed) or `python -m server.app` (from source).
 
 The GTK4 window opens. Go to the **Dashboard** tab and click **Start Server**.
 
 ### 2 — Enable USB Tethering on Android
+
+Connect the USB cable, then:
 
 **Settings → Network → Hotspot & Tethering → USB Tethering → ON**
 
@@ -113,7 +140,13 @@ The PC's tethering address is always `192.168.42.129`.
 
 ### 3 — Open the Android app
 
-Install the APK from [Releases](https://github.com/princesavsaviya/TetherLink/releases). The app discovers the server automatically via UDP broadcast and connects.
+The app walks you through the connection automatically:
+
+1. **No USB** — prompts to connect the cable
+2. **Tethering Off** — prompts to enable USB tethering in Settings
+3. **Scanning** — listens for the server's UDP broadcast
+4. **Server Found** — shows server details; choose resolution, refresh rate, and monitor position
+5. **Streaming** — fullscreen display; tap to show the HUD overlay
 
 ---
 
@@ -121,7 +154,7 @@ Install the APK from [Releases](https://github.com/princesavsaviya/TetherLink/re
 
 The GTK4 app provides three tabs:
 
-**Dashboard** — Start / stop the server, live connection status (codec, FPS, resolution, client IP), scrollable log.
+**Dashboard** — Start / stop the server, live connection status (codec, FPS, resolution, client device name), scrollable log.
 
 **Stream Settings** — Codec (JPEG / H.264), FPS slider, JPEG quality, H.264 bitrate, TCP port, auto-start toggle. FPS and quality changes apply live without restarting the stream.
 
@@ -131,15 +164,15 @@ The GTK4 app provides three tabs:
 
 ## Tech Stack
 
-| Layer          | Technology                                              |
-|----------------|---------------------------------------------------------|
-| Server UI      | Python 3.12, GTK4 + Libadwaita, pystray (xorg backend) |
-| Screen capture | Mutter ScreenCast D-Bus API                             |
-| Encode / stream| GStreamer 1.0 (`jpegenc` / `x264enc` / `appsink`)       |
-| Transport      | TCP over USB tethering (`192.168.42.x` subnet)          |
-| Discovery      | UDP broadcast                                           |
-| Settings       | JSON (`~/.config/tetherlink/settings.json`)             |
-| Android client | Kotlin 1.9, Android SDK 34, Coroutines                  |
+| Layer           | Technology                                              |
+|-----------------|---------------------------------------------------------|
+| Server UI       | Python 3.12, GTK4 + Libadwaita, pystray                 |
+| Screen capture  | Mutter ScreenCast D-Bus API (Wayland), mss (X11 fallback)|
+| Encode / stream | GStreamer 1.0 (`jpegenc` / `x264enc` / `appsink`)        |
+| Transport       | TCP over USB tethering (`192.168.42.x` subnet)           |
+| Discovery       | UDP broadcast (port 8765)                                |
+| Settings        | JSON (`~/.config/tetherlink/settings.json`)              |
+| Android client  | Kotlin 1.9, Jetpack Compose, MediaCodec, Coroutines      |
 
 ---
 
@@ -148,17 +181,23 @@ The GTK4 app provides three tabs:
 ```
 TetherLink/
 ├── server/
-│   ├── app.py            # GTK4 application entry point
-│   ├── server_core.py    # Screen capture, encode, TCP server
-│   ├── discovery.py      # UDP broadcast discovery
-│   ├── tray.py           # pystray system tray (xorg backend)
+│   ├── app/
+│   │   └── main.py           # GTK4 application entry point
+│   ├── core/
+│   │   ├── server_core.py    # Screen capture, encode, TCP server, virtual display
+│   │   └── discovery.py      # UDP broadcast discovery
 │   └── ui/
-│       ├── window.py     # AdwApplicationWindow, 3-tab layout
-│       └── style.css     # Custom GTK CSS
-├── android/              # Kotlin Android client
-├── tests/                # Protocol, compatibility, stress, security tests
-├── desktop/              # .desktop launcher entry
-└── setup.py              # Debian packaging config
+│       ├── window.py         # AdwApplicationWindow, 3-tab layout
+│       ├── tray.py           # pystray system tray
+│       └── style.css         # Custom GTK CSS
+├── android/                  # Kotlin Android client (Jetpack Compose)
+├── desktop/                  # .desktop launcher and app icon
+├── snap/
+│   └── snapcraft.yaml        # Snap package config
+├── docs/                     # Landing page and screenshots
+├── build_deb.sh              # Debian package builder script
+├── stdeb.cfg                 # stdeb packaging config
+└── setup.py                  # Python package metadata
 ```
 
 ---
@@ -172,10 +211,11 @@ TetherLink/
 | M3        | GStreamer pipeline, Mutter virtual display | Done        |
 | M4        | Dynamic port scan, Material You dark theme | Done        |
 | M5        | GTK4 + Libadwaita desktop UI               | Done        |
-| M6        | Touch input forwarding (tablet → PC mouse) | Planned     |
-| M7        | Audio forwarding over USB                  | Planned     |
-| M8        | Auto-discovery (UDP broadcast)             | Done        |
-| M9        | Windows server support                     | Planned     |
+| M6        | Auto-discovery (UDP broadcast)             | Done        |
+| M7        | Snap & Debian packaging                    | Done        |
+| M8        | Touch input forwarding (tablet → PC mouse) | Planned     |
+| M9        | Audio forwarding over USB                  | Planned     |
+| M10       | Windows server support                     | Planned     |
 
 ---
 
