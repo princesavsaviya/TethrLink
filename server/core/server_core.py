@@ -66,7 +66,7 @@ FALLBACK_HEIGHT = 1080
 class ServerConfig:
     fps: int = 45
     quality: int = 90
-    codec: int = CODEC_JPEG
+    codec: int = CODEC_H264
     bitrate: int = 3000
     h264_width: int = 1280
     port: int = 51137
@@ -459,12 +459,19 @@ class PipeWireCapture:
                 h264_h += 1
             pipeline_str = (
                 f"pipewiresrc path={node_id} always-copy=true "
+                f"! videorate " 
                 f"! videoconvert ! videoscale "
-                f"! video/x-raw,format=I420,width={h264_width},height={h264_h} "
-                f"! x264enc tune=zerolatency speed-preset=ultrafast "
-                f"  bitrate={bitrate} key-int-max={fps} "
+                f"! video/x-raw,format=NV12,width={h264_width},height={h264_h},framerate={fps}/1,colorimetry=bt709 " 
+                                
+                # 1. key-int-max=1: Every frame is a full image. NO MORE GHOSTING.
+                # 2. quantizer=15: High quality, visually lossless.
+                f"! x264enc tune=zerolatency speed-preset=medium pass=qual quantizer=1 key-int-max=45 "
+                
+                # 3. Precise color metadata: Force BT.709 and Range=Limited to fix the purple/cyan tint.
+                f"  option-string=\"colorprim=bt709:transfer=bt709:colormatrix=bt709:fullrange=off\" "
+                
                 f"! h264parse config-interval=-1 "
-                f"! video/x-h264,stream-format=avc,alignment=au "
+                f"! video/x-h264,stream-format=byte-stream,alignment=au,profile=high "
                 f"! appsink name=sink emit-signals=true "
                 f"  max-buffers={APPSINK_MAX_BUFFERS} drop=true sync=false"
             )
