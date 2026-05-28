@@ -2,9 +2,9 @@
 
 > Turn your Android tablet into a wired second monitor for Linux — no Wi-Fi, no cloud, no latency spikes.
 
-TethrLink streams a virtual display from your Linux PC to an Android tablet over a direct USB tethering connection. The PC captures a dedicated virtual screen via the Mutter ScreenCast D-Bus API, encodes frames with GStreamer (JPEG or H.264), and pushes them over a private `192.168.42.x` USB subnet. The Android client decodes and renders them fullscreen in real time.
+TethrLink streams a virtual display from your Linux PC to an Android tablet over a direct USB tethering connection. The PC captures a dedicated virtual screen via the Mutter ScreenCast D-Bus API, encodes frames with GStreamer (JPEG by default, H.264 available), and pushes them over a private `192.168.42.x` USB subnet. The Android client decodes and renders them fullscreen in real time.
 
-**Measured end-to-end latency: ~47 ms at 30 FPS.**
+**Measured end-to-end latency: ~47 ms at 45 FPS (production default). Tested up to 120 FPS.**
 
 ---
 
@@ -31,8 +31,8 @@ Transport: private `192.168.42.x` subnet, ~1–5 ms RTT over USB cable.
 ### Linux Server
 - **Zero-config transport** — USB tethering only, no router or Wi-Fi needed
 - **Independent virtual display** — tablet gets its own screen space via Mutter ScreenCast D-Bus API
-- **Dual codec** — software JPEG or GStreamer H.264 (x264enc), switchable at runtime
-- **Hot-reload** — change FPS and JPEG quality live without restarting the stream
+- **Dual codec** — JPEG (default, stable) and H.264 via x264enc (`zerolatency` tune, BT.709 colorimetry, Annex B byte-stream); H.264 streaming is functional with quality improvements actively in progress
+- **Hot-reload** — change FPS, JPEG quality, and H.264 bitrate live without restarting the stream
 - **UDP auto-discovery** — server broadcasts on port 8765, Android app connects without manual IP entry
 - **GTK4 + Libadwaita UI** — dark desktop app with three-tab dashboard and system tray integration
 - **Persistent settings** — saved to `~/.config/tethrlink/settings.json`
@@ -44,7 +44,7 @@ Transport: private `192.168.42.x` subnet, ~1–5 ms RTT over USB cable.
 - **Guided setup flow** — walks through USB cable detection, tethering, scanning, and connection
 - **Auto-discovery** — listens for UDP broadcasts and populates server details automatically
 - **Fullscreen immersive rendering** — hides system UI; screen stays on during streaming
-- **Dual codec decoding** — JPEG via `BitmapFactory`, H.264 via `MediaCodec` async (low-latency mode)
+- **Dual codec decoding** — JPEG via `BitmapFactory`; H.264 via `MediaCodec` async with hardware acceleration, NAL unit splitting, and SPS/PPS auto-detection (no pre-configuration needed)
 - **Overlay HUD** — tap to toggle FPS counter, resolution, codec, server name, and disconnect button
 - **Resolution & refresh rate selection** — choose 720p / 1080p / 1440p / 4K and 60 / 120 / 144 Hz before connecting
 - **Auto-reconnect** — reconnects with 2-second delay on stream interruption
@@ -53,13 +53,14 @@ Transport: private `192.168.42.x` subnet, ~1–5 ms RTT over USB cable.
 
 ## Performance
 
-| Metric         | Value                         |
-|----------------|-------------------------------|
-| Encode latency | 7.57 ms / frame (JPEG, Q=80)  |
-| Frame size     | ~124 KB / frame (1920×1080)   |
-| Stream rate    | 30 FPS                        |
-| USB bandwidth  | ~40 Mbps                      |
-| End-to-end     | ~47 ms                        |
+| Metric         | JPEG (default, stable)        | H.264 (available, WIP quality)|
+|----------------|-------------------------------|-------------------------------|
+| Encode latency | 7.57 ms / frame (Q=80)        | ~5–10 ms / frame              |
+| Frame size     | ~124 KB / frame (1920×1080)   | ~8 KB avg at 3 Mbps target    |
+| Stream rate    | 45 FPS (prod) / 120 FPS (test)| 45 FPS (prod) / 120 FPS (test)|
+| USB bandwidth  | ~40 Mbps                      | ~3–6 Mbps (configurable)      |
+| End-to-end     | ~47 ms                        | ~47 ms                        |
+| Color accuracy | —                             | BT.709                        |
 
 ---
 
@@ -79,6 +80,8 @@ Transport: private `192.168.42.x` subnet, ~1–5 ms RTT over USB cable.
 ---
 
 ## Installation
+
+> **H.264 note:** The stable release packages (`.deb`, `.snap`, APK) include JPEG streaming only. H.264 is available on the `develop` branch and requires installing from source on both the Linux server and Android. See [H.264 (develop branch)](#h264-develop-branch) below.
 
 ### Option 1 — Debian / Ubuntu package
 
@@ -122,6 +125,41 @@ Download `app-release.apk` from [Releases](https://github.com/princesavsaviya/Te
 
 ---
 
+### H.264 (develop branch)
+
+H.264 streaming is functional but quality is still being refined. If you want to try it early, install both the server and the Android app from the `develop` branch.
+
+**Linux server:**
+
+```bash
+# Install H.264 encoder dependency (if not already present)
+sudo apt install gstreamer1.0-plugins-ugly   # provides x264enc
+
+# Clone the develop branch
+git clone -b develop https://github.com/princesavsaviya/TetherLink.git
+cd TetherLink
+/usr/bin/python3 -m venv venv --system-site-packages
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Launch
+python -m server.app
+```
+
+Then open **Stream Settings**, switch the codec to **H.264**, and restart the stream.
+
+**Android app:**
+
+The released APK does not include the H.264 decoder update. You need to build the app from the `develop` branch:
+
+1. Clone the repo (`-b develop`) and open the `android/` folder in Android Studio.
+2. Connect your tablet via USB, select **Run → Run 'app'** (or build a signed APK via **Build → Generate Signed APK**).
+3. Install the built APK on your tablet — it will replace the existing release version.
+
+> H.264 quality improvements are ongoing. If you run into visual artifacts or distortion, switching back to JPEG in Stream Settings is the stable fallback.
+
+---
+
 ## Usage
 
 ### 1 — Start the server
@@ -156,7 +194,7 @@ The GTK4 app provides three tabs:
 
 **Dashboard** — Start / stop the server, live connection status (codec, FPS, resolution, client device name), scrollable log.
 
-**Stream Settings** — Codec (JPEG / H.264), FPS slider, JPEG quality, H.264 bitrate, TCP port, auto-start toggle. FPS and quality changes apply live without restarting the stream.
+**Stream Settings** — Codec (JPEG default / H.264 available), FPS slider (45 production, up to 120), JPEG quality, H.264 bitrate, TCP port, auto-start toggle. All changes apply live without restarting the stream.
 
 **Display Settings** — Virtual display layout relative to your primary monitor (above / below / left / right), orientation (landscape / portrait), resolution preset (720p / 1080p / 1440p) or custom size.
 
@@ -168,7 +206,7 @@ The GTK4 app provides three tabs:
 |-----------------|---------------------------------------------------------|
 | Server UI       | Python 3.12, GTK4 + Libadwaita, pystray                 |
 | Screen capture  | Mutter ScreenCast D-Bus API (Wayland), mss (X11 fallback)|
-| Encode / stream | GStreamer 1.0 (`jpegenc` / `x264enc` / `appsink`)        |
+| Encode / stream | GStreamer 1.0 (`x264enc` H.264 / `jpegenc` JPEG, `appsink`) |
 | Transport       | TCP over USB tethering (`192.168.42.x` subnet)           |
 | Discovery       | UDP broadcast (port 8765)                                |
 | Settings        | JSON (`~/.config/tethrlink/settings.json`)               |
