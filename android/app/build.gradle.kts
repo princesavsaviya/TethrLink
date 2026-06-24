@@ -15,9 +15,20 @@ android {
         versionName   = "1.0.0"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile     = file(System.getenv("TETHRLINK_KEYSTORE_PATH") ?: "tethrlink-release.keystore")
+            storePassword = System.getenv("TETHRLINK_KEYSTORE_PASSWORD")
+            keyAlias      = "tethrlink"
+            keyPassword   = System.getenv("TETHRLINK_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            signingConfig     = signingConfigs.getByName("release")
+            isMinifyEnabled   = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -49,7 +60,6 @@ dependencies {
     implementation(libs.material)
     implementation(libs.androidx.constraintlayout)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.zxing.android)
 
     // Jetpack Compose
     val composeBom = platform("androidx.compose:compose-bom:2024.02.00")

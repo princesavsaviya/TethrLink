@@ -66,7 +66,7 @@ FALLBACK_HEIGHT = 1080
 class ServerConfig:
     fps: int = 45
     quality: int = 90
-    codec: int = CODEC_H264
+    codec: int = CODEC_JPEG
     bitrate: int = 3000
     h264_width: int = 1280
     port: int = 51137
