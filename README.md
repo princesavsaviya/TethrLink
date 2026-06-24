@@ -85,7 +85,7 @@ Transport: private `192.168.42.x` subnet, ~1–5 ms RTT over USB cable.
 
 ### Option 1 — Debian / Ubuntu package
 
-Download the latest `.deb` from [Releases](https://github.com/princesavsaviya/TetherLink/releases) and install:
+Download the latest `.deb` from [Releases](https://github.com/princesavsaviya/TethrLink/releases) and install:
 
 ```bash
 sudo dpkg -i tethrlink_1.0.0_amd64.deb
@@ -109,8 +109,8 @@ sudo apt install python3-gi python3-dbus \
   gir1.2-gstreamer-1.0 gir1.2-gtk-4.0 gir1.2-adw-1
 
 # Clone and set up a venv (system site-packages required for GObject bindings)
-git clone https://github.com/princesavsaviya/TetherLink.git
-cd TetherLink
+git clone https://github.com/princesavsaviya/TethrLink.git
+cd TethrLink
 /usr/bin/python3 -m venv venv --system-site-packages
 source venv/bin/activate
 pip install -r requirements.txt
@@ -121,7 +121,7 @@ python -m server.app
 
 ### Android APK
 
-Download `app-release.apk` from [Releases](https://github.com/princesavsaviya/TetherLink/releases) and install it on your tablet.
+Download `app-release.apk` from [Releases](https://github.com/princesavsaviya/TethrLink/releases) and install it on your tablet.
 
 ---
 
@@ -136,8 +136,8 @@ H.264 streaming is functional but quality is still being refined. If you want to
 sudo apt install gstreamer1.0-plugins-ugly   # provides x264enc
 
 # Clone the develop branch
-git clone -b develop https://github.com/princesavsaviya/TetherLink.git
-cd TetherLink
+git clone -b develop https://github.com/princesavsaviya/TethrLink.git
+cd TethrLink
 /usr/bin/python3 -m venv venv --system-site-packages
 source venv/bin/activate
 pip install -r requirements.txt
@@ -259,7 +259,7 @@ TethrLink/
 
 ## Author
 
-**Prince Savsaviya** — [princesavsaviya.learning@gmail.com](mailto:princesavsaviya.learning@gmail.com)
+**Prince Savsaviya** — [princesavsaviya2023.learning@gmail.com](mailto:princesavsaviya2023.learning@gmail.com)
 
 ---
 
