@@ -262,7 +262,7 @@ fun ConnectionScreen_OptionC(
                             .border(1.dp, Color(0xFF6366F1).copy(0.2f), RoundedCornerShape(10.dp))
                             .padding(12.dp)
                     ) {
-                        Text("▸ TETHERLINK LOG", color = Color(0xFF8B5CF6).copy(0.7f), fontSize = 10.sp, letterSpacing = 0.06.sp)
+                        Text("▸ TETHRLINK LOG", color = Color(0xFF8B5CF6).copy(0.7f), fontSize = 10.sp, letterSpacing = 0.06.sp)
                         Spacer(Modifier.height(6.dp))
                         logMessages.forEachIndexed { i, msg ->
                             val c = if (i == logMessages.size - 1) Color(0xFFA7F3D0).copy(0.8f) else Color.White.copy(0.3f)
