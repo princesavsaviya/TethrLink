@@ -288,3 +288,19 @@ def test_slot_counts_overwritten_frames_as_dropped():
     slot.put(b"a")
     slot.put(b"b")
     assert m.snapshot()["frames_dropped"] == 1
+
+
+def test_slot_counts_encoded_frames():
+    """The JPEG path used to be invisible in metrics (encoded=0 always,
+    even while streaming) because only EncodedFrameQueue.put() counted
+    frames_encoded. put() must count every frame the encoder produces,
+    same as the H.264 path, regardless of whether it is later read,
+    overwritten, or suppressed as a duplicate."""
+    m = StreamMetrics()
+    slot = LatestFrameSlot(metrics=m)
+    slot.put(b"a")
+    slot.put(b"b")  # overwrites "a" — still encoded, just also dropped
+    assert m.snapshot()["frames_encoded"] == 2
+    slot.get()
+    slot.get()  # duplicate-suppressed read must not affect frames_encoded
+    assert m.snapshot()["frames_encoded"] == 2

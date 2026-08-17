@@ -53,6 +53,12 @@ FRAME_WAIT_ATTEMPTS     = 100
 FRAME_WAIT_SLEEP_S      = 0.05
 CAPTURE_INIT_SLEEP_S    = 0.5
 MUTTER_SETUP_TIMEOUT_MS = 10_000
+# Idle keepalive: if nothing has been written to the client socket for this
+# long, the send loop acts (resend on JPEG, keyframe request on H.264) so the
+# Android client's 3000ms socket read timeout is never starved. 1.0s gives a
+# 3x margin. A static extended monitor is normal use for this product, not an
+# edge case, so this must hold indefinitely, not just bridge a brief stall.
+KEEPALIVE_INTERVAL_S    = 1.0
 
 # ── Network constants ─────────────────────────────────────────────────────────
 PORT_SCAN_RANGE     = 10
@@ -559,6 +565,16 @@ class PipeWireCapture:
         log.info("GStreamer pipeline playing (codec=%s)",
                  "H.264" if codec == CODEC_H264 else "JPEG")
         threading.Thread(target=self._loop.run, daemon=True).start()
+
+    def request_keyframe(self) -> None:
+        """Public entry point for forcing an IDR.
+
+        Thin wrapper around `_request_keyframe()` so callers outside this
+        class (the send loop's idle keepalive) don't reach into a private
+        method. Same operation as the overflow handler uses; there is only
+        ever one legitimate way to ask the encoder for a fresh IDR.
+        """
+        self._request_keyframe()
 
     def _request_keyframe(self) -> None:
         """Force an IDR after a queue overflow.
@@ -1232,17 +1248,43 @@ class ServerCore:
             frame_count  = 0
             fps_deadline = time.monotonic() + 1.0
 
+            # Idle keepalive bookkeeping. `last_sent_monotonic` starts at "now"
+            # (stream start), not at zero, so a session that goes idle
+            # immediately still gets a full keepalive interval of grace before
+            # the first keepalive action — matching the grace any frame send
+            # would reset it to. `last_sent_payload` stays None until the
+            # first real frame is actually written to the socket, which is
+            # what keeps the JPEG keepalive from ever resending nothing.
+            last_sent_monotonic = time.monotonic()
+            last_sent_payload: Optional[bytes] = None
+            keyframe_requested_since_last_frame = False
+
             while not self._shutdown.is_set() and not session_stop.is_set():
                 if capture.is_inter_frame:
                     # The encoder's framerate cap is the single rate authority.
                     # Blocking here means one clock instead of two; the old
                     # sleep-pacing raced the encoder and corrupted the stream.
-                    r = capture.get_encoded_frame(timeout=1.0)
+                    # The timeout is tied to KEEPALIVE_INTERVAL_S so an idle
+                    # stream is guaranteed to reach the keepalive check below
+                    # roughly once per interval without any extra sleep.
+                    r = capture.get_encoded_frame(timeout=KEEPALIVE_INTERVAL_S)
                     if r:
                         raw, _, _ = r
                         conn.sendall(struct.pack(">I", len(raw)) + raw)
                         capture.metrics.incr("frames_sent")
                         frame_count += 1
+                        last_sent_monotonic = time.monotonic()
+                        keyframe_requested_since_last_frame = False
+                    elif time.monotonic() - last_sent_monotonic >= KEEPALIVE_INTERVAL_S:
+                        # Never retransmit a previously-sent access unit here —
+                        # re-feeding a delta frame corrupts decoder state.
+                        # Instead ask the encoder for a fresh, self-contained
+                        # IDR; it will flow through the normal `if r:` branch
+                        # above once it arrives. Guarded so a still-silent
+                        # encoder doesn't get spammed every iteration.
+                        if not keyframe_requested_since_last_frame:
+                            capture.request_keyframe()
+                            keyframe_requested_since_last_frame = True
                 else:
                     start = time.monotonic()
                     r = capture.get_frame()
@@ -1251,6 +1293,22 @@ class ServerCore:
                         conn.sendall(struct.pack(">I", len(raw)) + raw)
                         capture.metrics.incr("frames_sent")
                         frame_count += 1
+                        last_sent_monotonic = start
+                        last_sent_payload = raw
+                    elif (
+                        last_sent_payload is not None
+                        and start - last_sent_monotonic >= KEEPALIVE_INTERVAL_S
+                    ):
+                        # JPEG frames are independently decodable, so
+                        # retransmitting the last one sent is harmless — this
+                        # is the deliberate, throttled reintroduction of the
+                        # retransmission LatestFrameSlot otherwise eliminates.
+                        conn.sendall(
+                            struct.pack(">I", len(last_sent_payload)) + last_sent_payload
+                        )
+                        capture.metrics.incr("frames_sent")
+                        frame_count += 1
+                        last_sent_monotonic = start
                     elapsed = time.monotonic() - start
                     sleep   = (1.0 / self._live_fps) - elapsed
                     if sleep > 0:

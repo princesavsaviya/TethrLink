@@ -192,6 +192,11 @@ class LatestFrameSlot:
                 self._count("frames_dropped")
             self._data = data
             self._fresh = True
+            # Mirrors EncodedFrameQueue.put(): every frame the encoder
+            # actually produces is counted here, so the JPEG path is no
+            # longer invisible in the per-second metrics log (it used to
+            # report encoded=0 even while frames were streaming).
+            self._count("frames_encoded")
 
     def get(self) -> Optional[bytes]:
         """Return the newest unread frame, or None if nothing new arrived.
