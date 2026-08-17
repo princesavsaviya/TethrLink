@@ -12,7 +12,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gio", "2.0")
 from gi.repository import Gtk, Gio, GLib
-from server.core.server_core import ServerCore, ServerConfig, ServerState
+from server.core.server_core import (
+    ServerCore, ServerConfig, ServerState, detect_codec,
+)
 from server.ui.window import TethrLinkWindow
 
 
@@ -47,6 +49,13 @@ class TethrLinkApp(Gtk.Application):
             flags=Gio.ApplicationFlags.FLAGS_NONE,
         )
         self._config     = ServerConfig()
+        # Codec override for testing. The shipped default stays JPEG until the
+        # H.264 path is validated on hardware; setting TETHRLINK_CODEC=h264
+        # selects it without changing what users get.
+        _codec_env = os.environ.get("TETHRLINK_CODEC")
+        if _codec_env:
+            self._config.codec = detect_codec(_codec_env.strip().lower())
+            log.info("Codec overridden via TETHRLINK_CODEC=%s", _codec_env)
         self._state      = ServerState()
         self._core       = None
         self._window     = None
