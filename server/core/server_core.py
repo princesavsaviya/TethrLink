@@ -682,6 +682,30 @@ class PipeWireCapture:
         with self._lock:
             return (data, self._fw, self._fh)
 
+    def peek_frame(self):
+        """JPEG path: report the current frame WITHOUT consuming it.
+
+        For the handshake's dimension probe. On an idle capture (a static
+        virtual display, which PipeWire only repaints on damage) the latest
+        frame may be the only one the encoder ever produces — a consuming
+        read here (get_frame()) would leave the slot empty forever and the
+        send loop would have nothing to send. Mirrors the non-destructive
+        contract wait_for_frame_dimensions() gives the H.264 path.
+
+        JPEG-only, same contract as get_frame(). Returns None if nothing has
+        arrived yet.
+        """
+        if self.is_inter_frame:
+            raise RuntimeError(
+                "peek_frame() is JPEG-only — use wait_for_frame_dimensions() "
+                "for the H.264 dimension probe"
+            )
+        data = self._sink_buffer.peek()
+        if data is None:
+            return None
+        with self._lock:
+            return (data, self._fw, self._fh)
+
     def wait_for_frame_dimensions(self, timeout: float):
         """Report the ACTUAL frame dimensions without consuming a frame.
 
@@ -881,6 +905,14 @@ class X11MssCapture:
         with self._lock:
             return (self._frame, self.width, self.height) if self._frame else None
 
+    def peek_frame(self):
+        """Mirrors get_frame(): this capture has no fresh/consumed tracking
+        at all — `_frame` is just "whatever was last grabbed" — so reading it
+        is already non-destructive. This method exists purely so callers on
+        the shared intra-only path (resolve_stream_dimensions) can use one
+        accessor name across both JPEG capture classes."""
+        return self.get_frame()
+
     def close(self) -> None:
         self._stop.set()
         self._thread.join(timeout=2.0)  # wait for mss to close before caller tears down display
@@ -899,8 +931,13 @@ def resolve_stream_dimensions(capture,
       read the cached caps dimensions. Nothing may be popped from the
       lossless queue here — the first access unit carries SPS/PPS/IDR and
       consuming it would permanently break decoder init on the client.
-    * intra-only (JPEG): the slot is latest-value-wins, so polling it costs
-      at most one redundant frame that would have been superseded anyway.
+    * intra-only (JPEG): the slot is latest-value-wins, but polling it must
+      still be non-consuming. On an idle capture (a static virtual display,
+      which PipeWire only repaints on damage) the frame observed here may be
+      the ONLY frame the encoder ever produces for the whole session — it is
+      NOT superseded by anything. Popping it would leave the send loop with
+      nothing to send and no way to ever bootstrap `last_sent_payload`,
+      which is exactly the regression this function must not reintroduce.
 
     Falls back to the capture's configured dimensions if no frame arrives
     within `attempts` × `sleep_s`.
@@ -911,7 +948,7 @@ def resolve_stream_dimensions(capture,
             return dims
     else:
         for _ in range(attempts):
-            r = capture.get_frame()
+            r = capture.peek_frame()
             if r:
                 _, w, h = r
                 return (w, h)
@@ -1309,6 +1346,32 @@ class ServerCore:
                         capture.metrics.incr("frames_sent")
                         frame_count += 1
                         last_sent_monotonic = start
+                    elif (
+                        last_sent_payload is None
+                        and start - last_sent_monotonic >= KEEPALIVE_INTERVAL_S
+                    ):
+                        # Defence in depth: nothing has ever been sent on this
+                        # connection, but a frame may already be sitting in
+                        # the slot (e.g. left there by the non-consuming
+                        # handshake dimension probe on an idle capture that
+                        # never produces a second frame). Without this, the
+                        # keepalive above could never bootstrap — it only
+                        # fires once last_sent_payload is set — and an idle
+                        # session would send literally nothing until the
+                        # client's read timeout fires and it reconnect-storms.
+                        # Use the non-consuming peek_frame(), not get_frame():
+                        # this is a best-effort bootstrap, not the normal
+                        # frame path, so it must not race/steal from it.
+                        boot = capture.peek_frame()
+                        if boot:
+                            raw, _, _ = boot
+                            conn.sendall(
+                                struct.pack(">I", len(raw)) + raw
+                            )
+                            capture.metrics.incr("frames_sent")
+                            frame_count += 1
+                            last_sent_monotonic = start
+                            last_sent_payload = raw
                     elapsed = time.monotonic() - start
                     sleep   = (1.0 / self._live_fps) - elapsed
                     if sleep > 0:

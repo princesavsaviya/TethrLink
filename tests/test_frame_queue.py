@@ -290,6 +290,44 @@ def test_slot_counts_overwritten_frames_as_dropped():
     assert m.snapshot()["frames_dropped"] == 1
 
 
+def test_slot_peek_does_not_consume():
+    """The handshake regression: peek() must leave the frame available for
+    the send loop's later get() — unlike get(), it must not clear the fresh
+    flag."""
+    slot = LatestFrameSlot()
+    slot.put(b"a")
+    assert slot.peek() == b"a"
+    assert slot.get() == b"a"  # still there after the peek
+    assert slot.get() is None  # now genuinely consumed
+
+
+def test_slot_peek_repeatable():
+    slot = LatestFrameSlot()
+    slot.put(b"a")
+    assert slot.peek() == b"a"
+    assert slot.peek() == b"a"
+    assert slot.peek() == b"a"
+
+
+def test_slot_peek_returns_none_when_never_filled():
+    slot = LatestFrameSlot()
+    assert slot.peek() is None
+
+
+def test_slot_peek_does_not_touch_any_counter():
+    """peek() is an inspection, not a consumption — counting it would
+    corrupt duplicates_suppressed (and any other counter)."""
+    m = StreamMetrics()
+    slot = LatestFrameSlot(metrics=m)
+    slot.put(b"a")
+    for _ in range(5):
+        slot.peek()
+    snap = m.snapshot()
+    assert snap["duplicates_suppressed"] == 0
+    assert snap["frames_dropped"] == 0
+    assert snap["frames_encoded"] == 1  # only the put() counted
+
+
 def test_slot_counts_encoded_frames():
     """The JPEG path used to be invisible in metrics (encoded=0 always,
     even while streaming) because only EncodedFrameQueue.put() counted

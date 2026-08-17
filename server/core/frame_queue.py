@@ -214,3 +214,25 @@ class LatestFrameSlot:
                 return None
             self._fresh = False
             return self._data
+
+    def peek(self) -> Optional[bytes]:
+        """Return the current payload without consuming it.
+
+        Unlike get(), this never clears the fresh flag — a get() that
+        follows a peek() still returns the same payload, as if the peek()
+        had never happened. Returns None if the slot has never been filled.
+
+        This exists for callers that only need to know a frame exists (e.g.
+        the handshake's dimension probe) and must not steal it: on an idle
+        encoder — a static virtual display that PipeWire only repaints on
+        damage — the current frame may be the last one that will ever
+        arrive, and get()'s consuming read would leave the slot permanently
+        empty for the send loop.
+
+        Deliberately does not touch any metric counter: this is an
+        inspection, not a consumption, and counting it would corrupt the
+        `duplicates_suppressed` signal (which measures genuinely-empty
+        polls, not peeks).
+        """
+        with self._lock:
+            return self._data

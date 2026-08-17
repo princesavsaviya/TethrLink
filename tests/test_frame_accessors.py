@@ -24,6 +24,7 @@ from server.core.server_core import (  # noqa: E402
     CODEC_H264,
     CODEC_JPEG,
     PipeWireCapture,
+    X11MssCapture,
     resolve_stream_dimensions,
 )
 
@@ -168,6 +169,101 @@ def test_jpeg_frame_accessor_returns_data_and_dimensions():
     cap = jpeg_capture()
     assert cap.get_frame() == (b"jpeg-frame", CONFIGURED_W, CONFIGURED_H)
     assert cap.get_frame() is None  # latest-wins: no redundant resend
+
+
+# ── The idle-JPEG-capture regression ──────────────────────────────────────────
+# On a static virtual display, PipeWire only emits on damage: after the first
+# handful of frames, the encoder may never produce another one for the whole
+# session. If the handshake's dimension probe consumes that one frame (the old
+# get_frame()-based implementation), the send loop finds the slot empty
+# forever, last_sent_payload never gets bootstrapped, and the server sends
+# literally nothing — the client times out and reconnect-storms.
+
+def test_jpeg_peek_frame_does_not_consume():
+    cap = jpeg_capture()
+    assert cap.peek_frame() == (b"jpeg-frame", CONFIGURED_W, CONFIGURED_H)
+    # A normal, consuming read afterward must still see it.
+    assert cap.get_frame() == (b"jpeg-frame", CONFIGURED_W, CONFIGURED_H)
+    assert cap.get_frame() is None  # now genuinely consumed
+
+
+def test_jpeg_peek_frame_returns_none_when_empty():
+    cap = jpeg_capture(observed=False)
+    assert cap.peek_frame() is None
+
+
+def test_resolve_stream_dimensions_leaves_the_only_frame_for_the_send_loop():
+    """The actual regression, asserted directly: on an idle capture that
+    produces exactly one frame and never another, the handshake's dimension
+    probe must not be the thing that consumes it."""
+    cap = jpeg_capture()  # exactly one frame ever arrives, as on an idle display
+
+    assert resolve_stream_dimensions(cap, attempts=5, sleep_s=0.0) == (
+        CONFIGURED_W, CONFIGURED_H
+    )
+
+    # The send loop's very first poll — its only chance, since the capture
+    # is idle and nothing else will ever be produced — must still find it.
+    assert cap.get_frame() == (b"jpeg-frame", CONFIGURED_W, CONFIGURED_H)
+
+
+def test_resolve_stream_dimensions_jpeg_polls_via_peek_not_get():
+    """Regression guard for the specific mechanism: polling for dimensions
+    must not itself be a sequence of destructive reads even when it takes
+    several attempts before the first frame shows up."""
+    cap = jpeg_capture(observed=False)
+
+    def fake_sleep(_):
+        if cap._sink_buffer.peek() is None:
+            cap._sink_buffer.put(b"late-jpeg")
+
+    assert resolve_stream_dimensions(
+        cap, attempts=5, sleep_s=0.0, sleep=fake_sleep
+    ) == (CONFIGURED_W, CONFIGURED_H)
+    # Still there for the send loop — the probe above must have peeked, not
+    # popped, on every attempt after the frame arrived.
+    assert cap.get_frame() == (b"late-jpeg", CONFIGURED_W, CONFIGURED_H)
+
+
+# ── X11MssCapture: the same intra-only path, a different capture class ───────
+
+def _bare_x11_capture(frame=b"x11-jpeg", width=CONFIGURED_W, height=CONFIGURED_H):
+    cap = object.__new__(X11MssCapture)
+    cap.width = width
+    cap.height = height
+    cap._lock = threading.Lock()
+    cap.is_inter_frame = False
+    cap._frame = frame
+    cap.metrics = StreamMetrics()
+    return cap
+
+
+def test_x11_peek_frame_mirrors_get_frame():
+    cap = _bare_x11_capture()
+    assert cap.peek_frame() == (b"x11-jpeg", CONFIGURED_W, CONFIGURED_H)
+
+
+def test_x11_peek_frame_does_not_consume():
+    """X11MssCapture has no fresh/consumed tracking — get_frame() is already
+    non-destructive — but peek_frame() must still not regress that."""
+    cap = _bare_x11_capture()
+    assert cap.peek_frame() == (b"x11-jpeg", CONFIGURED_W, CONFIGURED_H)
+    assert cap.get_frame() == (b"x11-jpeg", CONFIGURED_W, CONFIGURED_H)
+    assert cap.peek_frame() == (b"x11-jpeg", CONFIGURED_W, CONFIGURED_H)
+
+
+def test_x11_peek_frame_returns_none_when_empty():
+    cap = _bare_x11_capture(frame=None)
+    assert cap.peek_frame() is None
+
+
+def test_resolve_stream_dimensions_works_on_x11_capture_too():
+    cap = _bare_x11_capture()
+    assert resolve_stream_dimensions(cap, attempts=2, sleep_s=0.01) == (
+        CONFIGURED_W, CONFIGURED_H
+    )
+    # Not consumed: X11's frame is always "whatever was last grabbed".
+    assert cap.get_frame() == (b"x11-jpeg", CONFIGURED_W, CONFIGURED_H)
 
 
 def test_wait_for_frame_dimensions_reports_rotated_dimensions():
