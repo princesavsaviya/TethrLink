@@ -1149,22 +1149,42 @@ class ServerCore:
             fps_deadline = time.monotonic() + 1.0
 
             while not self._shutdown.is_set():
-                start = time.monotonic()
-                r = capture.get_frame()
-                if r:
-                    raw, _, _ = r
-                    conn.sendall(struct.pack(">I", len(raw)) + raw)
-                    frame_count += 1
+                if capture.is_inter_frame:
+                    # The encoder's framerate cap is the single rate authority.
+                    # Blocking here means one clock instead of two; the old
+                    # sleep-pacing raced the encoder and corrupted the stream.
+                    r = capture.get_encoded_frame(timeout=1.0)
+                    if r:
+                        raw, _, _ = r
+                        conn.sendall(struct.pack(">I", len(raw)) + raw)
+                        capture.metrics.incr("frames_sent")
+                        frame_count += 1
+                else:
+                    start = time.monotonic()
+                    r = capture.get_frame()
+                    if r:
+                        raw, _, _ = r
+                        conn.sendall(struct.pack(">I", len(raw)) + raw)
+                        capture.metrics.incr("frames_sent")
+                        frame_count += 1
+                    elapsed = time.monotonic() - start
+                    sleep   = (1.0 / self._live_fps) - elapsed
+                    if sleep > 0:
+                        time.sleep(sleep)
 
                 if time.monotonic() >= fps_deadline:
+                    snap = capture.metrics.snapshot()
                     self._state.update(fps=frame_count)
+                    log.info(
+                        "fps=%d encoded=%d sent=%d dropped=%d dup_suppressed=%d "
+                        "overflows=%d keyframe_reqs=%d",
+                        frame_count,
+                        snap["frames_encoded"], snap["frames_sent"],
+                        snap["frames_dropped"], snap["duplicates_suppressed"],
+                        snap["queue_overflows"], snap["keyframe_requests"],
+                    )
                     frame_count  = 0
                     fps_deadline = time.monotonic() + 1.0
-
-                elapsed = time.monotonic() - start
-                sleep   = (1.0 / self._live_fps) - elapsed
-                if sleep > 0:
-                    time.sleep(sleep)
 
         except (BrokenPipeError, ConnectionResetError, OSError):
             self._log(f"Client disconnected: {device_name}")
