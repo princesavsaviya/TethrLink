@@ -155,6 +155,106 @@ def test_put_returns_false_after_close():
     assert q.get(0.05) is None
 
 
+# ── Post-overflow keyframe gate ──────────────────────────────────────────────
+
+def test_overflow_arms_the_keyframe_gate():
+    q = EncodedFrameQueue(maxsize=1)
+    q.put(b"a")
+    assert q.needs_keyframe is False
+    q.put(b"b")  # overflow
+    assert q.needs_keyframe is True
+
+
+def test_delta_frames_are_rejected_while_waiting_for_the_resync():
+    """After an overflow the reference chain is broken, so a delta frame is
+    provably undecodable — sending it is the visible corruption itself."""
+    q = EncodedFrameQueue(maxsize=1)
+    q.put(b"a")
+    q.put(b"b")  # overflow drains the backlog and arms the gate
+    assert q.put(b"delta", is_keyframe=False) is False
+    assert q.get(0.05) is None
+
+
+def test_keyframe_clears_the_gate_and_is_accepted():
+    q = EncodedFrameQueue(maxsize=2)
+    q.put(b"a")
+    q.put(b"b")
+    q.put(b"c")  # overflow
+    assert q.put(b"idr", is_keyframe=True) is True
+    assert q.needs_keyframe is False
+    assert q.get(0.1).data == b"idr"
+    # Normal service resumes: deltas after the IDR are accepted again.
+    assert q.put(b"delta", is_keyframe=False) is True
+    assert q.get(0.1).data == b"delta"
+
+
+def test_rejected_frames_count_as_dropped():
+    m = StreamMetrics()
+    q = EncodedFrameQueue(maxsize=1, metrics=m)
+    q.put(b"a")
+    q.put(b"b")  # overflow: drains 1 → frames_dropped 1
+    q.put(b"d1")
+    q.put(b"d2")
+    q.put(b"d3")
+    assert m.snapshot()["frames_dropped"] == 4
+    assert m.snapshot()["queue_overflows"] == 1
+
+
+def test_gated_rejections_do_not_trigger_more_overflows():
+    calls = []
+    q = EncodedFrameQueue(maxsize=1, on_overflow=lambda: calls.append(1))
+    q.put(b"a")
+    q.put(b"b")  # the one real overflow
+    q.put(b"delta")
+    q.put(b"delta")
+    assert len(calls) == 1
+
+
+def test_only_a_keyframe_reopens_the_queue_after_overflow():
+    """Ordering guarantee: the first frame the consumer sees after an overflow
+    is always a keyframe, never a mid-GOP delta."""
+    q = EncodedFrameQueue(maxsize=2)
+    q.put(b"a", is_keyframe=True)
+    q.put(b"b")
+    q.put(b"c")  # overflow
+    q.put(b"d")
+    q.put(b"e")
+    q.put(b"idr", is_keyframe=True)
+    q.put(b"f")
+    assert [q.get(0.1).data for _ in range(2)] == [b"idr", b"f"]
+
+
+# ── frames_encoded honesty ───────────────────────────────────────────────────
+
+def test_frames_encoded_excludes_the_overflowing_frame():
+    """A frame that never entered the queue was not 'encoded' for our purposes
+    — it is reported as dropped instead."""
+    m = StreamMetrics()
+    q = EncodedFrameQueue(maxsize=1, metrics=m)
+    q.put(b"a")
+    q.put(b"b")  # rejected by overflow
+    assert m.snapshot()["frames_encoded"] == 1
+
+
+def test_frames_encoded_excludes_frames_discarded_after_close():
+    m = StreamMetrics()
+    q = EncodedFrameQueue(maxsize=4, metrics=m)
+    q.put(b"a")
+    q.close()
+    assert q.put(b"b") is False
+    assert m.snapshot()["frames_encoded"] == 1
+
+
+def test_frames_encoded_excludes_gated_rejections():
+    m = StreamMetrics()
+    q = EncodedFrameQueue(maxsize=1, metrics=m)
+    q.put(b"a")   # counted
+    q.put(b"b")   # overflow, not counted
+    q.put(b"c")   # gated, not counted
+    q.put(b"idr", is_keyframe=True)  # counted
+    assert m.snapshot()["frames_encoded"] == 2
+
+
 # ── LatestFrameSlot: the JPEG path ───────────────────────────────────────────
 
 def test_slot_returns_the_latest_value():

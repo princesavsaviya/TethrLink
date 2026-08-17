@@ -5,7 +5,9 @@ Two strategies, chosen by codec:
 * ``EncodedFrameQueue`` — lossless bounded FIFO for inter-frame codecs
   (H.264). Losing one encoded frame corrupts every frame until the next
   keyframe, so a drop is never acceptable in isolation. On overflow the
-  queue drains and demands a keyframe resync instead.
+  queue drains and demands a keyframe resync instead, then rejects
+  delta frames — explicitly, and counted — until that keyframe lands,
+  because they reference discarded data and cannot decode.
 * ``LatestFrameSlot`` — latest-value-wins, correct for intra-only codecs
   (JPEG) where each frame is independent.
 
@@ -42,18 +44,39 @@ class EncodedFrameQueue:
         self._seq = 0
         self._lock = threading.Lock()
         self._closed = False
+        # Set on overflow: the backlog was discarded, so the decoder's
+        # reference chain is broken and every delta frame until the next
+        # IDR is unsendable. Cleared by the first keyframe that arrives.
+        self._needs_keyframe = False
 
     def _count(self, name: str, n: int = 1) -> None:
         if self._metrics is not None:
             self._metrics.incr(name, n)
 
+    @property
+    def needs_keyframe(self) -> bool:
+        """True while the stream is waiting for an IDR to resync after an
+        overflow. Non-keyframes are rejected by put() while this holds."""
+        with self._lock:
+            return self._needs_keyframe
+
     def put(self, data: bytes, is_keyframe: bool = False) -> bool:
         """Enqueue an encoded frame.
 
-        Returns True normally. Returns False when the queue was full (the
-        backlog is discarded wholesale and a resync is requested, because
-        dropping a single inter-frame would corrupt the stream silently)
-        or when the queue has already been closed.
+        Returns True when the frame was accepted into the queue. Returns
+        False when
+
+        * the queue has already been closed;
+        * the queue was full (the backlog is discarded wholesale and a
+          resync is requested, because dropping a single inter-frame
+          would corrupt the stream silently);
+        * the stream is still waiting for the post-overflow keyframe and
+          this frame is a delta frame. Such a frame references discarded
+          data, so it is provably undecodable — transmitting it would
+          produce exactly the visible corruption an overflow resync
+          exists to end. The rejection is explicit and counted under
+          `frames_dropped`, which is what distinguishes it from the
+          silent mid-GOP drops this module was written to eliminate.
 
         Threading model: exactly one producer thread calls put() (the
         GStreamer appsink `new-sample` callback, a single streaming
@@ -62,15 +85,17 @@ class EncodedFrameQueue:
         context, during pipeline teardown) and genuinely races with
         put() — see close() for how that race is made safe.
         """
-        self._count("frames_encoded")
-        # The closed check, sequence assignment, and enqueue are kept
-        # atomic together under the lock so that close() can flip
-        # `_closed` and be guaranteed no put() started afterward will
-        # enqueue a frame (see close()). This lock is NOT here to guard
-        # against concurrent producers — there is only ever one producer
-        # thread in this module's threading model.
+        # The closed check, keyframe gate, sequence assignment, and
+        # enqueue are kept atomic together under the lock so that close()
+        # can flip `_closed` and be guaranteed no put() started afterward
+        # will enqueue a frame (see close()). This lock is NOT here to
+        # guard against concurrent producers — there is only ever one
+        # producer thread in this module's threading model.
         with self._lock:
             if self._closed:
+                return False
+            if self._needs_keyframe and not is_keyframe:
+                self._count("frames_dropped")
                 return False
             frame = Frame(data=data, seq=self._seq, is_keyframe=is_keyframe)
             self._seq += 1
@@ -79,9 +104,18 @@ class EncodedFrameQueue:
                 overflowed = False
             except queue.Full:
                 overflowed = True
+            else:
+                # Only frames that actually made it into the queue count as
+                # encoded — anything discarded below is reported as dropped.
+                self._count("frames_encoded")
+                if is_keyframe:
+                    self._needs_keyframe = False
 
         if not overflowed:
             return True
+
+        with self._lock:
+            self._needs_keyframe = True
 
         # Overflow handling (drain, metric increments, on_overflow()) runs
         # outside the lock deliberately: on_overflow() calls back into
@@ -160,6 +194,15 @@ class LatestFrameSlot:
             self._fresh = True
 
     def get(self) -> Optional[bytes]:
+        """Return the newest unread frame, or None if nothing new arrived.
+
+        An empty poll increments `duplicates_suppressed`: the send loop asked
+        for a frame faster than the encoder produced one, so a byte-identical
+        retransmission of the previous JPEG was avoided. That counter is
+        therefore a measure of saved bandwidth, NOT a fault — a steady stream
+        of them in the per-second log means the send loop is polling faster
+        than the capture framerate, which is normal and healthy.
+        """
         with self._lock:
             if not self._fresh:
                 self._count("duplicates_suppressed")
