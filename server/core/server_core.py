@@ -26,6 +26,8 @@ from server.core.preflight import (
     format_preflight,
     probe_encoders,
 )
+from server.core.frame_queue import EncodedFrameQueue, LatestFrameSlot
+from server.core.metrics import StreamMetrics
 
 # Mandatory global D-Bus initialization for GLib loop integration.
 # Must be called once before any D-Bus objects are created.
@@ -464,10 +466,23 @@ class PipeWireCapture:
         self.width  = width
         self.height = height
         self.codec  = codec
-        self._frame = None
         self._fw    = width
         self._fh    = height
         self._lock  = threading.Lock()
+
+        # H.264 is an inter-frame codec: losing one encoded frame corrupts
+        # every frame until the next keyframe, so its path must be lossless.
+        # JPEG frames are independent, so latest-wins remains correct there.
+        self.metrics        = StreamMetrics()
+        self.is_inter_frame = (codec == CODEC_H264)
+        if self.is_inter_frame:
+            self._sink_buffer = EncodedFrameQueue(
+                maxsize=4,
+                metrics=self.metrics,
+                on_overflow=self._request_keyframe,
+            )
+        else:
+            self._sink_buffer = LatestFrameSlot(metrics=self.metrics)
         self._jpegenc  = None
         self._flip     = None
         self._on_error = on_error  # called when pipeline errors — lets ServerCore abort the stream
@@ -483,21 +498,19 @@ class PipeWireCapture:
                 h264_h += 1
             pipeline_str = (
                 f"pipewiresrc path={node_id} always-copy=true "
-                f"! videorate " 
+                # Dropping RAW frames is safe — it only lowers framerate.
+                # This is the one place in the pipeline where dropping is allowed.
+                f"! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 "
+                f"! videorate "
                 f"! videoconvert ! videoscale "
-                f"! video/x-raw,format=NV12,width={h264_width},height={h264_h},framerate={fps}/1,colorimetry=bt709 " 
-                                
-                # 1. key-int-max=1: Every frame is a full image. NO MORE GHOSTING.
-                # 2. quantizer=15: High quality, visually lossless.
+                f"! video/x-raw,format=NV12,width={h264_width},height={h264_h},framerate={fps}/1,colorimetry=bt709 "
                 f"! x264enc tune=zerolatency speed-preset=medium pass=qual quantizer=1 key-int-max=45 "
-                
-                # 3. Precise color metadata: Force BT.709 and Range=Limited to fix the purple/cyan tint.
                 f"  option-string=\"colorprim=bt709:transfer=bt709:colormatrix=bt709:fullrange=off\" "
-                
                 f"! h264parse config-interval=-1 "
                 f"! video/x-h264,stream-format=byte-stream,alignment=au,profile=high "
+                # drop=false: everything downstream of the encoder is lossless.
                 f"! appsink name=sink emit-signals=true "
-                f"  max-buffers={APPSINK_MAX_BUFFERS} drop=true sync=false"
+                f"  max-buffers={APPSINK_MAX_BUFFERS} drop=false sync=false"
             )
         else:
             flip_method = "clockwise" if flip_orientation else "none"
@@ -537,6 +550,31 @@ class PipeWireCapture:
                  "H.264" if codec == CODEC_H264 else "JPEG")
         threading.Thread(target=self._loop.run, daemon=True).start()
 
+    def _request_keyframe(self) -> None:
+        """Force an IDR after a queue overflow.
+
+        The backlog was discarded, so the decoder's reference chain is broken;
+        only a keyframe restores it. Sent upstream from the appsink so it
+        reaches whichever encoder the pipeline is using.
+        """
+        try:
+            sink = self._pipeline.get_by_name("sink")
+            if sink is None:
+                return
+            pad = sink.get_static_pad("sink")
+            if pad is None:
+                return
+            structure = Gst.Structure.new_from_string(
+                "GstForceKeyUnit, all-headers=(boolean)true"
+            )
+            pad.send_event(Gst.Event.new_custom(
+                Gst.EventType.CUSTOM_UPSTREAM, structure
+            ))
+            self.metrics.incr("keyframe_requests")
+            log.warning("Frame queue overflow — forced keyframe resync")
+        except Exception as e:
+            log.debug("Force-keyframe request failed: %s", e)
+
     def _on_sample(self, sink) -> Gst.FlowReturn:
         sample = sink.emit("pull-sample")
         if not sample:
@@ -544,18 +582,20 @@ class PipeWireCapture:
         buf    = sample.get_buffer()
         ok, mi = buf.map(Gst.MapFlags.READ)
         if ok:
-            with self._lock:
-                self._frame = bytes(mi.data)
-                # image/jpeg caps have no width/height fields — use values from init.
-                # For H.264, read actual dims in case pipeline scaled.
-                if self.codec == CODEC_H264:
-                    try:
-                        caps = sample.get_caps().get_structure(0)
+            data = bytes(mi.data)
+            buf.unmap(mi)
+            if self.is_inter_frame:
+                is_key = not buf.has_flags(Gst.BufferFlags.DELTA_UNIT)
+                try:
+                    caps = sample.get_caps().get_structure(0)
+                    with self._lock:
                         self._fw = caps.get_value("width")
                         self._fh = caps.get_value("height")
-                    except Exception:
-                        pass
-            buf.unmap(mi)
+                except Exception:
+                    pass
+                self._sink_buffer.put(data, is_keyframe=is_key)
+            else:
+                self._sink_buffer.put(data)
         return Gst.FlowReturn.OK
 
     def set_quality(self, quality: int) -> None:
@@ -577,8 +617,20 @@ class PipeWireCapture:
                     self._fw, self._fh = self.width, self.height
 
     def get_frame(self):
+        """JPEG path: latest frame wins. None when nothing new has arrived."""
+        data = self._sink_buffer.get()
+        if data is None:
+            return None
         with self._lock:
-            return (self._frame, self._fw, self._fh) if self._frame else None
+            return (data, self._fw, self._fh)
+
+    def get_encoded_frame(self, timeout: float):
+        """H.264 path: exactly one access unit, in order, never repeated."""
+        frame = self._sink_buffer.get(timeout)
+        if frame is None:
+            return None
+        with self._lock:
+            return (frame.data, self._fw, self._fh)
 
     def _on_bus_error(self, _, message):
         err, _ = message.parse_error()
@@ -604,6 +656,10 @@ class PipeWireCapture:
         if not self._closed:
             self._closed = True
             self._pipeline.set_state(Gst.State.NULL)
+            if self.is_inter_frame:
+                # Wake any consumer blocked in get(), or shutdown hangs
+                # until the timeout expires.
+                self._sink_buffer.close()
 
     def close(self):
         self._release_pipeline()
@@ -635,6 +691,9 @@ class X11MssCapture:
         self._on_error = on_error
         self._monitor_cfg = monitor  # may include 'display' key for Xvfb
         self._frame: Optional[bytes] = None
+        # The mss path always produces JPEG, so latest-wins is correct here.
+        self.metrics        = StreamMetrics()
+        self.is_inter_frame = False
         self._lock  = threading.Lock()
         self._stop  = threading.Event()
         self._mss   = None           # created inside capture thread
