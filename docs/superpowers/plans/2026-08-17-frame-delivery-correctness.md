@@ -1018,7 +1018,7 @@ Per-second metrics are logged for verification."
 - [ ] **Step 1: Confirm the whole unit suite is green**
 
 Run: `./venv/bin/python -m pytest -v`
-Expected: 29 passed (5 metrics + 18 frame_queue + 6 preflight)
+Expected: 30 passed (5 metrics + 19 frame_queue + 6 preflight)
 
 - [ ] **Step 2: Start the server and capture the preflight line**
 
