@@ -203,10 +203,15 @@ verifiable.
 Without measurement none of the later fixes can be proven.
 - Counters: frames encoded / sent / dropped / duplicated, queue overflows,
   keyframe requests, end-to-end latency.
+- **Startup preflight**: log the resolved GStreamer version, plugin search path
+  and the encoders actually available to the running process. This is the check
+  that distinguishes a genuine packaging failure from a shadowed `PATH`, and it
+  gives support a single line to ask users for.
 - Handshake extension block + reverse control channel scaffolding.
 
 **Acceptance:** drop and duplicate counts are observable on the current build, and
-demonstrably non-zero on the H.264 path (confirming §2.1 empirically).
+demonstrably non-zero on the H.264 path (confirming §2.1 empirically); preflight
+output identifies the active GStreamer and encoder set.
 
 ### Phase 1 — Correctness (the FIFO fix)
 - Bounded lossless FIFO downstream of encoder; single-slot removed for H.264.
@@ -244,9 +249,36 @@ within the §1 budget.
 **Acceptance:** induced frame loss recovers within ~1 frame instead of up to 45.
 
 ### Phase 5 — Packaging and rollout
-- Ensure `.deb`/snap bundle the hardware encoder plugins. **Risk:** the CLI
-  GStreamer on the dev machine is 1.14.1 with *zero* H.264 encoders registered —
-  if a package ships that environment, every user silently falls back to software.
+
+**Confirmed defect — the `.deb` under-declares its dependencies.** Current
+`debian_build/DEBIAN/control` declares only `gstreamer1.0-pipewire`, which pulls
+`pipewire, libc6, libglib2.0-0t64, libgstreamer-plugins-base1.0-0,
+libgstreamer1.0-0` — and therefore does *not* satisfy:
+
+| Missing | Provides | Impact |
+|---|---|---|
+| `gir1.2-gstreamer-1.0` | `Gst-1.0.typelib` | `gi.require_version('Gst','1.0')` fails — no streaming at all |
+| `gstreamer1.0-plugins-good` | `jpegenc` | The default codec's encoder |
+| `gstreamer1.0-plugins-base` | `videoconvert`, `videoscale` | Every pipeline breaks |
+| `gstreamer1.0-plugins-ugly` | `x264enc` | H.264 path |
+| `gstreamer1.0-plugins-bad`, `gstreamer1.0-vaapi` | hardware encoders | Phase 3 |
+
+Note `libgstreamer-plugins-base1.0-0` (library) is a *different package* from
+`gstreamer1.0-plugins-base` (plugin elements); only the former is pulled in.
+
+This currently passes unnoticed because a standard Ubuntu desktop already carries
+most of these; it would fail on minimal installs and derivatives.
+
+Corrected `Depends` adds `gir1.2-gstreamer-1.0`, `gstreamer1.0-plugins-base`,
+`gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-ugly`, with
+`Recommends: gstreamer1.0-plugins-bad, gstreamer1.0-vaapi` (hardware acceleration
+is optional — software fallback must still work).
+
+**Snap:** `stage-packages` lists only `python3`, `python3-gi`, `python3-gi-cairo`
+— no GStreamer staged at all, relying entirely on the `gnome` extension's platform
+snap. Verify with `snap connections tethrlink` on a real install, especially
+whether `/dev/dri` is reachable for VAAPI/NVENC under strict confinement.
+
 - Surface the selected encoder in UI/logs for support diagnosis.
 - Keep JPEG as the released default until H.264 is validated; promote H.264 to
   default only after the device matrix passes.
@@ -255,7 +287,7 @@ within the §1 budget.
 
 | Risk | Mitigation |
 |---|---|
-| Bundled GStreamer lacks HW plugins → silent software fallback for all users | Explicit packaging dependencies; log and display chosen encoder |
+| Environment supplies an unexpected GStreamer → silent software fallback, or missing plugins → hard failure | Startup preflight logging the resolved GStreamer version, plugin path and available encoders (Phase 0). Note: a shadowing toolchain on `PATH` (e.g. Anaconda ships GStreamer 1.14.1 with no encoders) can make CLI diagnostics report a different GStreamer than the app actually loads — always verify via the app's own runtime, not `gst-inspect-1.0` |
 | Released clients break on protocol change | Append-only extension; both directions tested against legacy |
 | Odd Android resolutions trip fussy hardware encoders | Alignment rounding + SPS cropping; verify on real devices |
 | Tall portrait modes exceed decoder limits | Client reports `VideoCapabilities`; server clamps |
