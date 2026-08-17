@@ -817,14 +817,32 @@ Add this method to `PipeWireCapture`, immediately before `_on_sample`:
             pad = sink.get_static_pad("sink")
             if pad is None:
                 return
-            structure = Gst.Structure.new_from_string(
-                "GstForceKeyUnit, all-headers=(boolean)true"
-            )
-            pad.send_event(Gst.Event.new_custom(
-                Gst.EventType.CUSTOM_UPSTREAM, structure
-            ))
-            self.metrics.incr("keyframe_requests")
-            log.warning("Frame queue overflow — forced keyframe resync")
+            # push_event, NOT send_event: gst_pad_send_event() requires a
+            # DOWNSTREAM event on a sink pad, so an upstream event handed to
+            # send_event hits the wrong-direction guard and is silently
+            # dropped (returns False, raises nothing). push_event forwards it
+            # to the peer, which is what actually reaches the encoder.
+            # Prefer GStreamer's own constructor — it populates running-time
+            # and count, which a hand-built structure omits and some encoders
+            # require. Fall back to the bare structure if GstVideo is absent.
+            try:
+                event = GstVideo.video_event_new_upstream_force_key_unit(
+                    Gst.CLOCK_TIME_NONE, True, 0
+                )
+            except (NameError, AttributeError):
+                event = Gst.Event.new_custom(
+                    Gst.EventType.CUSTOM_UPSTREAM,
+                    Gst.Structure.new_from_string(
+                        "GstForceKeyUnit, all-headers=(boolean)true"
+                    ),
+                )
+            if pad.push_event(event):
+                self.metrics.incr("keyframe_requests")
+                log.warning("Frame queue overflow — forced keyframe resync")
+            else:
+                # Never claim success here: the metric is the evidence used
+                # to verify overflow recovery actually works.
+                log.warning("Frame queue overflow — keyframe request REJECTED")
         except Exception as e:
             log.debug("Force-keyframe request failed: %s", e)
 ```
