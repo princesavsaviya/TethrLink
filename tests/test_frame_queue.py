@@ -123,23 +123,11 @@ def test_close_releases_a_blocked_consumer():
     assert result == [None]
 
 
-def test_close_on_a_full_queue_still_releases_a_blocked_consumer():
-    """Regression: close() used to put_nowait(SENTINEL) and, on queue.Full,
-    fall back to drain() + a single retry — swallowing a second queue.Full
-    with a bare `pass`. Because close() races with the producer thread, a
-    put() landing in the gap between that drain() and the retry could
-    refill the queue and make the retry fail too, losing the sentinel and
-    leaving the consumer to block out its own timeout instead of being
-    released.
-
-    Filling the queue to capacity puts close() through exactly that
-    "queue is full when the sentinel is enqueued" path. Calling close()
-    to completion before starting the consumer thread keeps the test
-    deterministic (no reliance on how a real producer/close() race
-    happens to interleave) while still proving the sentinel actually
-    lands instead of being swallowed: if it were lost, the consumer
-    would block for its full 5s timeout instead of returning almost
-    immediately.
+def test_close_releases_consumer_when_queue_is_at_capacity():
+    """Verifies that close() releases a blocked consumer even when the queue
+    is at capacity. The concurrent-refill race is prevented by the _closed
+    flag (set under the lock in close(), checked under the same lock in put()),
+    and is covered separately by test_put_returns_false_after_close.
     """
     q = EncodedFrameQueue(maxsize=2)
     assert q.put(b"a") is True
