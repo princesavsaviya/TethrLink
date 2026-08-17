@@ -20,6 +20,12 @@ import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst
 
+try:
+    gi.require_version("GstVideo", "1.0")
+    from gi.repository import GstVideo
+except (ValueError, ImportError):
+    GstVideo = None
+
 from .discovery import DiscoveryBroadcaster
 from server.core.preflight import (
     H264_ENCODER_CANDIDATES,
@@ -554,8 +560,11 @@ class PipeWireCapture:
         """Force an IDR after a queue overflow.
 
         The backlog was discarded, so the decoder's reference chain is broken;
-        only a keyframe restores it. Sent upstream from the appsink so it
-        reaches whichever encoder the pipeline is using.
+        only a keyframe restores it. The force-key-unit event is an upstream
+        event, so it must be pushed (not sent) from the appsink's sink pad —
+        gst_pad_send_event() on a sink pad only accepts downstream events and
+        silently drops upstream ones; gst_pad_push_event() is what actually
+        propagates upstream to the peer (the encoder).
         """
         try:
             sink = self._pipeline.get_by_name("sink")
@@ -564,14 +573,29 @@ class PipeWireCapture:
             pad = sink.get_static_pad("sink")
             if pad is None:
                 return
-            structure = Gst.Structure.new_from_string(
-                "GstForceKeyUnit, all-headers=(boolean)true"
-            )
-            pad.send_event(Gst.Event.new_custom(
-                Gst.EventType.CUSTOM_UPSTREAM, structure
-            ))
-            self.metrics.incr("keyframe_requests")
-            log.warning("Frame queue overflow — forced keyframe resync")
+
+            if GstVideo is not None:
+                event = GstVideo.video_event_new_upstream_force_key_unit(
+                    Gst.CLOCK_TIME_NONE, True, 0
+                )
+            else:
+                structure = Gst.Structure.new_from_string(
+                    "GstForceKeyUnit, all-headers=(boolean)true"
+                )
+                event = Gst.Event.new_custom(
+                    Gst.EventType.CUSTOM_UPSTREAM, structure
+                )
+
+            accepted = pad.push_event(event)
+            if accepted:
+                self.metrics.incr("keyframe_requests")
+                log.warning("Frame queue overflow — forced keyframe resync")
+            else:
+                log.warning(
+                    "Frame queue overflow — keyframe request was rejected "
+                    "by the pipeline; decoder may stay corrupted until the "
+                    "next scheduled keyframe"
+                )
         except Exception as e:
             log.debug("Force-keyframe request failed: %s", e)
 
