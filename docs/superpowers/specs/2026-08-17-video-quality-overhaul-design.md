@@ -303,8 +303,7 @@ whether `/dev/dri` is reachable for VAAPI/NVENC under strict confinement.
 
 ## 10. Open decisions
 
-1. **Rotation handling** — renegotiate geometry live on device rotation, or
-   require reconnect? Current code captures dimensions once at connect.
+None outstanding.
 
 ### Resolved
 
@@ -313,3 +312,32 @@ whether `/dev/dri` is reachable for VAAPI/NVENC under strict confinement.
   derived from the device's reported `density_dpi`. Content therefore renders at
   full pixel density (sharp) while occupying a readable physical size. A 1080×2400
   panel at ~2.5× yields roughly a 432×960 logical desktop.
+
+- **Rotation handling** — renegotiate live, confirmed 2026-08-17. See §11.
+
+## 11. Live geometry renegotiation
+
+Rotating the device must not require a reconnect. It is *not* seamless, however:
+the virtual monitor, the encoder and the decoder all have to be reconfigured, so
+the honest target is **an automatic sub-second transition**, not a glitch-free one.
+
+Sequence:
+
+1. Client observes a configuration change and re-reads its window bounds.
+2. Client **debounces ~300 ms** — rotation animations emit several config changes,
+   and acting on each would thrash the pipeline.
+3. Client sends `GEOMETRY_CHANGED{width, height}` on the reverse control channel.
+4. Server pauses the send loop and drains the FIFO.
+5. Server rebuilds the virtual monitor and GStreamer pipeline at the new
+   dimensions. Mutter's `RecordVirtual` has no live-resize operation, so this is a
+   teardown and recreate.
+6. Server sends `STREAM_RESET{width, height, codec}` before resuming frames.
+7. Client flushes and reconfigures `MediaCodec` for the new format, then resumes.
+
+The explicit `STREAM_RESET` matters: relying on the decoder to adapt silently to
+new in-band SPS/PPS works on some MediaCodec implementations and not others.
+Signalling the change out-of-band and reconfiguring deliberately is the portable
+path across SoCs.
+
+Because step 5 recreates the pipeline, the first frame after a rotation is
+necessarily an IDR — no additional keyframe request is needed.
