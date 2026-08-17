@@ -489,6 +489,10 @@ class PipeWireCapture:
             )
         else:
             self._sink_buffer = LatestFrameSlot(metrics=self.metrics)
+        # Set once the appsink callback has OBSERVED a sample, so the
+        # handshake can learn the real (possibly scaled) frame dimensions
+        # without popping anything off the encoded-frame queue.
+        self._first_sample = threading.Event()
         self._jpegenc  = None
         self._flip     = None
         self._on_error = on_error  # called when pipeline errors — lets ServerCore abort the stream
@@ -620,6 +624,7 @@ class PipeWireCapture:
                 self._sink_buffer.put(data, is_keyframe=is_key)
             else:
                 self._sink_buffer.put(data)
+            self._first_sample.set()
         return Gst.FlowReturn.OK
 
     def set_quality(self, quality: int) -> None:
@@ -641,12 +646,42 @@ class PipeWireCapture:
                     self._fw, self._fh = self.width, self.height
 
     def get_frame(self):
-        """JPEG path: latest frame wins. None when nothing new has arrived."""
+        """JPEG path: latest frame wins. None when nothing new has arrived.
+
+        JPEG-only by contract. On the H.264 path the buffer is a lossless
+        queue whose only legitimate consumer is the send loop: popping from
+        anywhere else consumes an access unit (the first one carries
+        SPS/PPS/IDR). Callers that only want the frame size must use
+        wait_for_frame_dimensions(); callers that want frames must use
+        get_encoded_frame(). Fail loudly rather than corrupt the stream.
+        """
+        if self.is_inter_frame:
+            raise RuntimeError(
+                "get_frame() is JPEG-only — use get_encoded_frame() from the "
+                "send loop, or wait_for_frame_dimensions() for dimensions"
+            )
         data = self._sink_buffer.get()
         if data is None:
             return None
         with self._lock:
             return (data, self._fw, self._fh)
+
+    def wait_for_frame_dimensions(self, timeout: float):
+        """Report the ACTUAL frame dimensions without consuming a frame.
+
+        The H.264 pipeline may scale, so the caps dimensions can differ from
+        the requested ones and the client must be told the real ones in the
+        handshake. `_on_sample` caches them from the sample caps, so waiting
+        for the first sample to be observed is enough — and it must be, since
+        popping here would consume the first access unit (SPS/PPS/IDR) and
+        permanently break decoder initialisation on the client.
+
+        Returns (width, height), or None if no sample arrived in time.
+        """
+        if not self._first_sample.wait(timeout):
+            return None
+        with self._lock:
+            return (self._fw, self._fh)
 
     def get_encoded_frame(self, timeout: float):
         """H.264 path: exactly one access unit, in order, never repeated."""
@@ -833,6 +868,39 @@ class X11MssCapture:
     def close(self) -> None:
         self._stop.set()
         self._thread.join(timeout=2.0)  # wait for mss to close before caller tears down display
+
+
+def resolve_stream_dimensions(capture,
+                              attempts: int = FRAME_WAIT_ATTEMPTS,
+                              sleep_s: float = FRAME_WAIT_SLEEP_S,
+                              sleep: Callable[[float], None] = time.sleep):
+    """Discover the dimensions to advertise in the handshake.
+
+    The pipeline may scale, so the encoded frames' real size can differ from
+    the requested one. Each codec needs a different way to find that out:
+
+    * inter-frame (H.264): wait until the first sample has been OBSERVED and
+      read the cached caps dimensions. Nothing may be popped from the
+      lossless queue here — the first access unit carries SPS/PPS/IDR and
+      consuming it would permanently break decoder init on the client.
+    * intra-only (JPEG): the slot is latest-value-wins, so polling it costs
+      at most one redundant frame that would have been superseded anyway.
+
+    Falls back to the capture's configured dimensions if no frame arrives
+    within `attempts` × `sleep_s`.
+    """
+    if capture.is_inter_frame:
+        dims = capture.wait_for_frame_dimensions(attempts * sleep_s)
+        if dims is not None:
+            return dims
+    else:
+        for _ in range(attempts):
+            r = capture.get_frame()
+            if r:
+                _, w, h = r
+                return (w, h)
+            sleep(sleep_s)
+    return (capture.width, capture.height)
 
 
 # ── ServerCore ────────────────────────────────────────────────────────────────
@@ -1129,14 +1197,7 @@ class ServerCore:
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 2)
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 1)
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
-            for _ in range(FRAME_WAIT_ATTEMPTS):
-                r = capture.get_frame()
-                if r:
-                    _, w, h = r
-                    break
-                time.sleep(FRAME_WAIT_SLEEP_S)
-            else:
-                w, h = capture.width, capture.height
+            w, h = resolve_stream_dimensions(capture)
 
             conn.sendall(MAGIC_OK + struct.pack(">IIB", w, h, codec))
             self._log(f"Streaming → {device_name}")
