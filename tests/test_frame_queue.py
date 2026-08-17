@@ -123,6 +123,50 @@ def test_close_releases_a_blocked_consumer():
     assert result == [None]
 
 
+def test_close_on_a_full_queue_still_releases_a_blocked_consumer():
+    """Regression: close() used to put_nowait(SENTINEL) and, on queue.Full,
+    fall back to drain() + a single retry — swallowing a second queue.Full
+    with a bare `pass`. Because close() races with the producer thread, a
+    put() landing in the gap between that drain() and the retry could
+    refill the queue and make the retry fail too, losing the sentinel and
+    leaving the consumer to block out its own timeout instead of being
+    released.
+
+    Filling the queue to capacity puts close() through exactly that
+    "queue is full when the sentinel is enqueued" path. Calling close()
+    to completion before starting the consumer thread keeps the test
+    deterministic (no reliance on how a real producer/close() race
+    happens to interleave) while still proving the sentinel actually
+    lands instead of being swallowed: if it were lost, the consumer
+    would block for its full 5s timeout instead of returning almost
+    immediately.
+    """
+    q = EncodedFrameQueue(maxsize=2)
+    assert q.put(b"a") is True
+    assert q.put(b"b") is True  # queue is now at capacity
+    q.close()
+
+    result = []
+
+    def consume():
+        result.append(q.get(5.0))
+
+    t = threading.Thread(target=consume)
+    t.start()
+    t.join(timeout=1)
+    assert not t.is_alive()  # returned well before the 5s timeout
+    assert result == [None]
+
+
+def test_put_returns_false_after_close():
+    """close() marks the queue closed so a producer racing with close()
+    can never refill it after the sentinel has been enqueued."""
+    q = EncodedFrameQueue(maxsize=4)
+    q.close()
+    assert q.put(b"late") is False
+    assert q.get(0.05) is None
+
+
 # ── LatestFrameSlot: the JPEG path ───────────────────────────────────────────
 
 def test_slot_returns_the_latest_value():
