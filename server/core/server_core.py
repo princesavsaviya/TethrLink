@@ -21,6 +21,11 @@ gi.require_version("Gst", "1.0")
 from gi.repository import GLib, Gst
 
 from .discovery import DiscoveryBroadcaster
+from server.core.preflight import (
+    H264_ENCODER_CANDIDATES,
+    format_preflight,
+    probe_encoders,
+)
 
 # Mandatory global D-Bus initialization for GLib loop integration.
 # Must be called once before any D-Bus objects are created.
@@ -432,6 +437,22 @@ class X11VirtualDisplay:
 
 # ── GStreamer capture ─────────────────────────────────────────────────────────
 
+def log_gstreamer_preflight() -> None:
+    """Log the GStreamer the running process actually loaded."""
+    Gst.init(None)
+    registry = Gst.Registry.get()
+    plugin = registry.find_plugin("coreelements")
+    plugin_path = plugin.get_filename() if plugin else "unknown"
+    available = probe_encoders(
+        finder=Gst.ElementFactory.find,
+        candidates=H264_ENCODER_CANDIDATES,
+    )
+    for line in format_preflight(
+        Gst.version_string(), plugin_path, available
+    ).splitlines():
+        log.info(line)
+
+
 class PipeWireCapture:
     def __init__(self, node_id: int, width: int, height: int, codec: int,
                  fps: int, bitrate: int, h264_width: int, quality: int = 90,
@@ -755,6 +776,7 @@ class ServerCore:
         self._client_lock = threading.Lock()
         self._live_fps          = config.fps
         self._live_quality      = config.quality
+        log_gstreamer_preflight()
 
     def _log(self, msg: str) -> None:
         log.info(msg)
