@@ -39,6 +39,8 @@ Create `tests/test_metrics.py`:
 ```python
 import threading
 
+import pytest
+
 from server.core.metrics import StreamMetrics
 
 
@@ -63,11 +65,8 @@ def test_incr_accumulates():
 
 def test_incr_rejects_unknown_counter():
     m = StreamMetrics()
-    try:
+    with pytest.raises(KeyError):
         m.incr("nonsense")
-    except KeyError:
-        return
-    raise AssertionError("expected KeyError for unknown counter")
 
 
 def test_reset_zeroes_all():
@@ -413,20 +412,28 @@ class EncodedFrameQueue:
         dropping a single inter-frame would corrupt the stream silently.
         """
         self._count("frames_encoded")
+        # Sequence assignment and enqueue must be atomic together, or two
+        # producers could interleave and leave the queue out of order.
         with self._lock:
-            seq = self._seq
+            frame = Frame(data=data, seq=self._seq, is_keyframe=is_keyframe)
             self._seq += 1
-        frame = Frame(data=data, seq=seq, is_keyframe=is_keyframe)
-        try:
-            self._q.put_nowait(frame)
+            try:
+                self._q.put_nowait(frame)
+                overflowed = False
+            except queue.Full:
+                overflowed = True
+
+        if not overflowed:
             return True
-        except queue.Full:
-            discarded = self.drain()
-            self._count("frames_dropped", discarded)
-            self._count("queue_overflows")
-            if self._on_overflow is not None:
-                self._on_overflow()
-            return False
+
+        # Overflow handling runs outside the lock: on_overflow calls back into
+        # GStreamer, and holding the lock across that risks deadlock.
+        discarded = self.drain()
+        self._count("frames_dropped", discarded)
+        self._count("queue_overflows")
+        if self._on_overflow is not None:
+            self._on_overflow()
+        return False
 
     def get(self, timeout: float) -> Optional[Frame]:
         """Pop exactly one frame, or None on timeout/close. Never repeats."""
