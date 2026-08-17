@@ -439,18 +439,21 @@ class X11VirtualDisplay:
 
 def log_gstreamer_preflight() -> None:
     """Log the GStreamer the running process actually loaded."""
-    Gst.init(None)
-    registry = Gst.Registry.get()
-    plugin = registry.find_plugin("coreelements")
-    plugin_path = plugin.get_filename() if plugin else "unknown"
-    available = probe_encoders(
-        finder=Gst.ElementFactory.find,
-        candidates=H264_ENCODER_CANDIDATES,
-    )
-    for line in format_preflight(
-        Gst.version_string(), plugin_path, available
-    ).splitlines():
-        log.info(line)
+    try:
+        Gst.init(None)
+        registry = Gst.Registry.get()
+        plugin = registry.find_plugin("coreelements")
+        plugin_path = plugin.get_filename() if plugin else "unknown"
+        available = probe_encoders(
+            finder=Gst.ElementFactory.find,
+            candidates=H264_ENCODER_CANDIDATES,
+        )
+        for line in format_preflight(
+            Gst.version_string(), plugin_path, available
+        ).splitlines():
+            log.info(line)
+    except Exception as e:
+        log.warning("GStreamer preflight diagnostics unavailable: %s", e)
 
 
 class PipeWireCapture:
