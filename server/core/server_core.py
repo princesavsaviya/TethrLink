@@ -1215,6 +1215,15 @@ class ServerCore:
 
             conn.sendall(MAGIC_OK + struct.pack(">IIB", w, h, codec))
             self._log(f"Streaming → {device_name}")
+            if capture.is_inter_frame:
+                # The H.264 framerate lives in the pipeline caps, fixed when
+                # the pipeline was built, and the send loop is now driven by
+                # the encoder rather than by a sleep — so changing the live
+                # FPS setting cannot take effect on an open H.264 session.
+                self._log(
+                    f"H.264 framerate is fixed at {self._live_fps} FPS by the "
+                    "pipeline — live FPS changes apply after reconnecting"
+                )
             self._state.update(connected=True, client_name=device_name,
                                active_width=width, active_height=height,
                                device_width=self._config.device_width,
