@@ -1068,6 +1068,17 @@ class ServerCore:
 
         self._conn = conn  # store so _on_session_closed can abort the stream
 
+        # Explicit per-session stop signal. Capture teardown (pipeline error,
+        # display reconfiguration) used to be signalled only indirectly, by
+        # shutting the socket down and relying on the send loop's next
+        # sendall() raising. That depended on there always being a frame to
+        # send — true only of the old stale-frame slot. Both current buffers
+        # correctly return None once drained/closed, so with no frames left
+        # sendall() would never be reached, the loop would never raise, and
+        # _client_lock would be held until server shutdown, answering every
+        # reconnect with MAGIC_BUSY. The send loop now checks this event.
+        session_stop = threading.Event()
+
         # ── Save device dims for reference (used by UI canvas, not for resolution) ──
         if screen_w > 0 and screen_h > 0:
             self._config.device_width  = screen_w
@@ -1114,6 +1125,7 @@ class ServerCore:
                     GLib.idle_add(_do_session_cleanup)
 
                 def _do_session_cleanup():
+                    session_stop.set()
                     if self._capture:
                         try:
                             self._capture.close()
@@ -1132,6 +1144,7 @@ class ServerCore:
 
                 def _on_capture_error():
                     self._log("PipeWire stream ended — display config likely changed")
+                    session_stop.set()
                     if self._conn:
                         try:
                             self._conn.shutdown(socket.SHUT_RDWR)
@@ -1163,6 +1176,7 @@ class ServerCore:
 
                 def _on_capture_error_x11():
                     self._log("X11 capture error — stream stopped")
+                    session_stop.set()
                     if self._conn:
                         try:
                             self._conn.shutdown(socket.SHUT_RDWR)
@@ -1209,7 +1223,7 @@ class ServerCore:
             frame_count  = 0
             fps_deadline = time.monotonic() + 1.0
 
-            while not self._shutdown.is_set():
+            while not self._shutdown.is_set() and not session_stop.is_set():
                 if capture.is_inter_frame:
                     # The encoder's framerate cap is the single rate authority.
                     # Blocking here means one clock instead of two; the old
@@ -1246,6 +1260,11 @@ class ServerCore:
                     )
                     frame_count  = 0
                     fps_deadline = time.monotonic() + 1.0
+
+            if session_stop.is_set():
+                # Distinct from "Client disconnected": the socket may still be
+                # perfectly healthy here — it is the capture that went away.
+                self._log(f"Capture stopped — ending session with {device_name}")
 
         except (BrokenPipeError, ConnectionResetError, OSError):
             self._log(f"Client disconnected: {device_name}")
