@@ -53,3 +53,182 @@ def default_bitrate_kbps(
     """
     raw = width * height * fps * bits_per_pixel / 1000.0
     return int(max(MIN_BITRATE_KBPS, min(MAX_BITRATE_KBPS, raw)))
+
+
+# Hardware first, software last. Presence in this list means "worth trying",
+# never "known to work" — see `probe.py` callers, which must instantiate.
+CANDIDATES = (
+    "nvh264enc",       # NVIDIA NVENC
+    "vah264enc",       # modern VA, standard
+    "vah264lpenc",     # modern VA, low-power
+    "vaapih264enc",    # legacy VAAPI
+    "qsvh264enc",      # Intel QSV
+    "v4l2h264enc",     # ARM / embedded
+    "x264enc",         # software
+    "openh264enc",     # software
+)
+
+HARDWARE_ELEMENTS = frozenset({
+    "nvh264enc", "vah264enc", "vah264lpenc",
+    "vaapih264enc", "qsvh264enc", "v4l2h264enc",
+})
+
+# Which property carries rate control. Verified by introspecting real
+# elements: these genuinely differ, and guessing "rate-control" everywhere
+# silently fails on the two most important encoders.
+RC_PROPERTY = {
+    "x264enc":      "pass",
+    "nvh264enc":    "rc-mode",
+    "vaapih264enc": "rate-control",
+    "vah264enc":    "rate-control",
+    "vah264lpenc":  "rate-control",
+    "qsvh264enc":   "rate-control",
+}
+
+# Normalized mode -> the nickname this encoder actually accepts. Every value
+# here was confirmed settable on a real element; nvh264enc notably has no
+# "cqp" (it is spelled "constqp") and offers "cbr-ld-hq", a low-delay
+# high-quality CBR mode that suits a latency-sensitive link better than
+# plain "cbr".
+RC_NICKS = {
+    "x264enc":      {RateControl.CBR: "cbr", RateControl.CQP: "qual"},
+    "nvh264enc":    {RateControl.CBR: "cbr-ld-hq", RateControl.VBR: "vbr-hq",
+                     RateControl.CQP: "constqp"},
+    "vaapih264enc": {RateControl.CBR: "cbr", RateControl.VBR: "vbr",
+                     RateControl.CQP: "cqp"},
+    "vah264enc":    {RateControl.CBR: "cbr", RateControl.VBR: "vbr",
+                     RateControl.CQP: "cqp"},
+    "vah264lpenc":  {RateControl.CBR: "cbr", RateControl.VBR: "vbr",
+                     RateControl.CQP: "cqp"},
+    "qsvh264enc":   {RateControl.CBR: "cbr", RateControl.VBR: "vbr",
+                     RateControl.CQP: "cqp"},
+}
+
+
+def _rc_nick(element: str, mode: str) -> str:
+    return RC_NICKS.get(element, {}).get(mode, mode)
+
+
+def _x264(cfg: EncoderConfig) -> Dict[str, str]:
+    props = {
+        "key-int-max": str(cfg.gop_length),
+        "bframes": "0",
+    }
+    if cfg.low_latency:
+        # `medium` was the shipped value and is not a realtime preset; it cost
+        # latency for quality nobody could see over a compressed link.
+        props["speed-preset"] = "ultrafast"
+        props["tune"] = "zerolatency"
+    if cfg.rate_control == RateControl.CQP:
+        props["pass"] = "qual"
+        props["quantizer"] = "21"
+    else:
+        props["pass"] = "cbr"
+        props["bitrate"] = str(cfg.bitrate_kbps)
+    return props
+
+
+def _nvenc(cfg: EncoderConfig) -> Dict[str, str]:
+    # NVENC has NO "cqp" nickname — it is spelled "constqp" — and its
+    # rate-control lives on `rc-mode`, not `rate-control`. Both were verified
+    # by set_property against a real element.
+    props = {"gop-size": str(cfg.gop_length), "bframes": "0"}
+    if cfg.low_latency:
+        props["zerolatency"] = "true"
+    props["rc-mode"] = _rc_nick("nvh264enc", cfg.rate_control)
+    if cfg.rate_control == RateControl.CQP:
+        props["qp-const"] = "21"
+    else:
+        props["bitrate"] = str(cfg.bitrate_kbps)
+    return props
+
+
+def _vaapi(cfg: EncoderConfig) -> Dict[str, str]:
+    props = {"keyframe-period": str(cfg.gop_length), "max-bframes": "0"}
+    props["rate-control"] = _rc_nick("vaapih264enc", cfg.rate_control)
+    if cfg.rate_control != RateControl.CQP:
+        props["bitrate"] = str(cfg.bitrate_kbps)
+    return props
+
+
+def _va(cfg: EncoderConfig) -> Dict[str, str]:
+    # The modern `va` plugin spells it `b-frames` and `key-int-max`.
+    props = {"key-int-max": str(cfg.gop_length), "b-frames": "0"}
+    props["rate-control"] = _rc_nick("vah264lpenc", cfg.rate_control)
+    if cfg.rate_control != RateControl.CQP:
+        props["bitrate"] = str(cfg.bitrate_kbps)
+    return props
+
+
+def _qsv(cfg: EncoderConfig) -> Dict[str, str]:
+    props = {"gop-size": str(cfg.gop_length)}
+    if cfg.rate_control != RateControl.CQP:
+        props["rate-control"] = _rc_nick("qsvh264enc", cfg.rate_control)
+        props["bitrate"] = str(cfg.bitrate_kbps)
+    return props
+
+
+def _v4l2(cfg: EncoderConfig) -> Dict[str, str]:
+    # v4l2 encoders take tuning through a controls string rather than
+    # individual properties.
+    if cfg.rate_control == RateControl.CQP:
+        return {}
+    return {
+        "extra-controls":
+            f"controls,video_bitrate={cfg.bitrate_kbps * 1000},"
+            f"h264_i_frame_period={cfg.gop_length}",
+    }
+
+
+def _openh264(cfg: EncoderConfig) -> Dict[str, str]:
+    props = {"gop-size": str(cfg.gop_length)}
+    if cfg.rate_control != RateControl.CQP:
+        # openh264enc counts in bits per second, unlike every other encoder
+        # here. Getting this wrong yields a 1000x-wrong bitrate.
+        props["bitrate"] = str(cfg.bitrate_kbps * 1000)
+    return props
+
+
+_ADAPTERS = {
+    "x264enc":      _x264,
+    "nvh264enc":    _nvenc,
+    "vaapih264enc": _vaapi,
+    "vah264enc":    _va,
+    "vah264lpenc":  _va,
+    "qsvh264enc":   _qsv,
+    "v4l2h264enc":  _v4l2,
+    "openh264enc":  _openh264,
+}
+
+
+def build_spec(element, config, available_rate_controls):
+    """Resolve `config` against one encoder, or None if it cannot comply.
+
+    `available_rate_controls` is what the element's enum actually offers on
+    THIS machine. It is a parameter rather than a lookup because the answer is
+    hardware-dependent: `vah264lpenc` on Intel Comet Lake exposes only `cqp`,
+    and its enum type name is even suffixed with the render node it was
+    probed from.
+    """
+    adapter = _ADAPTERS.get(element)
+    if adapter is None:
+        return None
+
+    wanted = config.rate_control
+    if wanted not in available_rate_controls:
+        if RateControl.CQP not in available_rate_controls:
+            return None
+        # Degrade to constant-quantizer rather than refusing the encoder.
+        config = EncoderConfig(
+            bitrate_kbps=config.bitrate_kbps,
+            gop_length=config.gop_length,
+            rate_control=RateControl.CQP,
+            low_latency=config.low_latency,
+        )
+
+    return EncoderSpec(
+        element=element,
+        is_hardware=element in HARDWARE_ELEMENTS,
+        rate_control=config.rate_control,
+        props=adapter(config),
+    )
