@@ -23,7 +23,7 @@ a normal, supported outcome and continue video-only.
 
 import logging
 import time
-from typing import Optional
+from typing import Optional, Set, Tuple
 
 import dbus
 
@@ -65,7 +65,9 @@ class RemoteInput:
         ri.move(nx, ny)      # normalised [0,1], coalesced
         ri.button(code, True)
         ri.axis(dx, dy)
-        ri.stop()
+        ri.release_all()     # e.g. on an unexpected client disconnect
+        ri.stop()            # also flushes pending motion and releases
+                              # any still-held buttons
 
     `width`/`height` are taken at construction rather than in bind_stream(),
     because they are not discoverable from the ScreenCast D-Bus API at all —
@@ -90,6 +92,14 @@ class RemoteInput:
         self._session: Optional[dbus.Interface] = None
         self._stream_path: Optional[str] = None
         self._last_motion_dispatch = 0.0
+        # Most recent position dropped by the coalescing gate in move(),
+        # retained so it can be flushed later instead of lost outright. See
+        # move()'s docstring and _flush_pending_motion().
+        self._pending_position: Optional[Tuple[float, float]] = None
+        # Button codes this module believes are currently held down on the
+        # desktop, so release_all() can recover from a dropped or missing
+        # release. See button() and release_all().
+        self._held_buttons: Set[int] = set()
 
     def create(self) -> Optional[str]:
         """Create a RemoteDesktop session and return its SessionId.
@@ -150,33 +160,102 @@ class RemoteInput:
         each interval boundary is actually sent over D-Bus — never the
         first of a burst, since a stale coordinate is worse than a dropped
         one.
+
+        A call that arrives while the gate is closed is not discarded: it
+        is kept as the pending position (most recent wins) and flushed
+        later by _flush_pending_motion(), so a gesture that ends mid-gate
+        (finger lifts, no further move() ever arrives) still reaches its
+        true final position instead of stalling wherever the last
+        *dispatched* move left the pointer.
+
+        Every argument and every step here — including the scaling call —
+        is inside the guard: a malformed, non-numeric argument must not
+        escape this method any more than a D-Bus failure does.
         """
         if self._session is None or self._stream_path is None:
             return
-        now = time.monotonic()
-        if now - self._last_motion_dispatch < self._frame_interval_s:
-            return
-        coords = to_stream_coords(nx, ny, self._width, self._height)
-        if coords is None:
-            return
-        x, y = coords
-        # Mark the interval consumed before the round trip so a D-Bus
-        # failure can't turn into a retry storm on the very next call.
-        self._last_motion_dispatch = now
         try:
+            coords = to_stream_coords(nx, ny, self._width, self._height)
+            if coords is None:
+                return
+            now = time.monotonic()
+            if now - self._last_motion_dispatch < self._frame_interval_s:
+                self._pending_position = coords
+                return
+            self._pending_position = None
+            x, y = coords
+            # Mark the interval consumed before the round trip so a D-Bus
+            # failure can't turn into a retry storm on the very next call.
+            self._last_motion_dispatch = now
             self._session.NotifyPointerMotionAbsolute(self._stream_path, x, y)
         except Exception as e:
             log.debug("RemoteInput.move dropped: %s", e)
 
+    def _flush_pending_motion(self) -> None:
+        """Dispatch a position retained by move()'s coalescing gate, if
+        any, immediately and unconditionally.
+
+        Called before any button event, because in absolute-pointer mode a
+        gesture is bracketed by button events, so this deterministically
+        catches the end of every drag and every tap — and also fixes a
+        subtler ordering bug: a tap must click where the finger actually
+        is, not where the previous dispatched move left the pointer.
+
+        Also called from stop(), so a session never ends with an
+        unflushed position sitting in the gate.
+        """
+        pending = self._pending_position
+        self._pending_position = None
+        if pending is None or self._session is None or self._stream_path is None:
+            return
+        x, y = pending
+        self._last_motion_dispatch = time.monotonic()
+        try:
+            self._session.NotifyPointerMotionAbsolute(self._stream_path, x, y)
+        except Exception as e:
+            log.debug("RemoteInput.move dropped (flush): %s", e)
+
     def button(self, code: int, pressed: bool) -> None:
         """Notify a pointer button edge. Never coalesced — a click is a
-        discrete event, not a stream of redundant samples."""
+        discrete event, not a stream of redundant samples.
+
+        Flushes any pending coalesced motion first (see
+        _flush_pending_motion()), and tracks which button codes are
+        logically held so release_all() can recover from a dropped or
+        missing release rather than leaving a button stuck down.
+        """
+        self._flush_pending_motion()
+        if pressed:
+            self._held_buttons.add(code)
+        else:
+            self._held_buttons.discard(code)
         if self._session is None:
             return
         try:
             self._session.NotifyPointerButton(code, pressed)
         except Exception as e:
             log.debug("RemoteInput.button dropped: %s", e)
+
+    def release_all(self) -> None:
+        """Release every button this module believes is currently held,
+        and clear the held set.
+
+        Exception-safe and idempotent, like everything else here: safe to
+        call when nothing is held, safe to call more than once, and one
+        button's failed release never prevents the others from being
+        attempted. Called from stop() so ending a session can never leave
+        a button down; also called when a client disconnects
+        unexpectedly.
+        """
+        held = list(self._held_buttons)
+        self._held_buttons.clear()
+        if self._session is None:
+            return
+        for code in held:
+            try:
+                self._session.NotifyPointerButton(code, False)
+            except Exception as e:
+                log.debug("RemoteInput.release_all dropped release for %s: %s", code, e)
 
     def axis(self, dx: float, dy: float) -> None:
         """Notify a scroll delta. Never coalesced — each delta is relative,
@@ -192,7 +271,14 @@ class RemoteInput:
         """Stop the session. Safe to call twice, and safe to call on a
         session that was never started — Mutter raises
         org.freedesktop.DBus.Error.Failed: Session not started in that
-        case, which is expected and swallowed here, not exceptional."""
+        case, which is expected and swallowed here, not exceptional.
+
+        Also flushes any pending coalesced motion and releases every held
+        button first, so a session never ends with a stale pointer
+        position outstanding or a button stuck down.
+        """
+        self._flush_pending_motion()
+        self.release_all()
         if self._session is None:
             return
         try:
