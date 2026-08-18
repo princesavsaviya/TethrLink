@@ -56,7 +56,9 @@ def default_bitrate_kbps(
 
 
 # Hardware first, software last. Presence in this list means "worth trying",
-# never "known to work" — see `probe.py` callers, which must instantiate.
+# never "known to work" — see the callers in `server_core.py`
+# (`select_encoder`/`_encoder_runs`), which must instantiate and actually run
+# the element at the real capture size before believing it.
 CANDIDATES = (
     "nvh264enc",       # NVIDIA NVENC
     "vah264enc",       # modern VA, standard
