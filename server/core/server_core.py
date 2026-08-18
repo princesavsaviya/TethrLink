@@ -27,6 +27,7 @@ except (ValueError, ImportError):
     GstVideo = None
 
 from .discovery import DiscoveryBroadcaster
+from server.core.link import is_tether_peer
 from server.core.profiles import ProfileStore
 from server.core.preflight import (
     H264_ENCODER_CANDIDATES,
@@ -1566,6 +1567,10 @@ class ServerCore:
         while not self._shutdown.is_set():
             try:
                 conn, addr = self._srv.accept()
+                if not is_tether_peer(addr[0]):
+                    log.warning("Rejected connection from non-tether peer %s", addr[0])
+                    conn.close()
+                    continue
                 threading.Thread(
                     target=self._handle_client,
                     args=(conn, addr),

@@ -20,12 +20,13 @@ import socket
 import threading
 import time
 
+from server.core.link import tether_broadcast_address
+
 log = logging.getLogger("TethrLink.Discovery")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 BROADCAST_PORT     = 8765
 BROADCAST_INTERVAL = 2.0    # seconds between announcements
-BROADCAST_ADDRESS  = "255.255.255.255"
 SOCKET_TIMEOUT_S   = 1.0    # receive timeout so stop() is responsive
 
 VERSION = "0.9.5"
@@ -68,7 +69,7 @@ class DiscoveryBroadcaster:
 
         while self._running:
             packet = self._make_packet()
-            for dest in (BROADCAST_ADDRESS, "127.255.255.255"):
+            for dest in (tether_broadcast_address(), "127.255.255.255"):
                 try:
                     sock.sendto(packet, (dest, BROADCAST_PORT))
                 except Exception as e:
