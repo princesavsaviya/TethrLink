@@ -54,7 +54,7 @@ sudo apt install python3-gi python3-dbus \
 # Optional — hardware encoding
 sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-vaapi
 
-git clone https://github.com/princesavsaviya/TetherLink.git
+git clone https://github.com/princesavsaviya/TethrLink.git
 cd TethrLink
 /usr/bin/python3 -m venv venv --system-site-packages
 source venv/bin/activate
