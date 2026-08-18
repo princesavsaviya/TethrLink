@@ -630,6 +630,49 @@ def gstreamer_fingerprint() -> str:
         return "unknown"
 
 
+def _encoder_spec_from_cache(cached: dict) -> Optional[EncoderSpec]:
+    """Reconstruct an EncoderSpec from a disk-cached encoder record.
+
+    Returns None for anything malformed instead of raising. profiles.py
+    documents its own contract as: a missing, corrupt, or wrongly-shaped
+    store degrades to "no cached value" — one slow start, nothing else (see
+    its module docstring). That contract has to hold for what's *inside* a
+    well-formed-looking record too, not just for the store's outer shape.
+    A hand-edited or corrupted `props` field — a list, a string, a number
+    where a mapping was expected — used to reach a bare `dict(...)` call
+    here and raise (`dict(['a', 'b', 'c'])` raises ValueError). That raise
+    happened before `_encoder_runs` (the trust-but-verify gate) and before
+    the CANDIDATES probe loop ever got a chance to run and overwrite the bad
+    entry, so a single corrupted record used to break every subsequent
+    connection identically instead of costing one slow start.
+
+    `element` must be a non-empty string — a spec naming no element isn't a
+    usable cached selection. `props`, when present, must be a mapping; when
+    absent it defaults to `{}` (that was already the pre-fix behaviour via
+    `cached.get("props") or {}` and is not a malformed case, just an encoder
+    recorded with no extra properties).
+    """
+    if not isinstance(cached, dict):
+        return None
+    element = cached.get("element")
+    if not isinstance(element, str) or not element:
+        return None
+    rate_control = cached.get("rate_control", "")
+    if not isinstance(rate_control, str):
+        return None
+    props = cached.get("props")
+    if props is None:
+        props = {}
+    if not isinstance(props, dict):
+        return None
+    return EncoderSpec(
+        element=element,
+        is_hardware=bool(cached.get("is_hardware")),
+        rate_control=rate_control,
+        props=dict(props),
+    )
+
+
 def select_encoder(config: EncoderConfig, width: int, height: int):
     """Pick the best encoder that actually works at this size, hardware first.
 
@@ -653,24 +696,34 @@ def select_encoder(config: EncoderConfig, width: int, height: int):
     store.load()
     cached = store.get_encoder(fingerprint)
     if cached:
-        spec = EncoderSpec(
-            element=cached.get("element", ""),
-            is_hardware=bool(cached.get("is_hardware")),
-            rate_control=cached.get("rate_control", ""),
-            props=dict(cached.get("props") or {}),
-        )
-        # Trust but verify: a cached encoder that no longer works — a GPU in
-        # use by another session, a driver that loaded differently — must not
-        # break the stream. Re-running it is far cheaper than the full probe.
-        if spec.element and _encoder_runs(spec, width, height):
+        spec = _encoder_spec_from_cache(cached)
+        if spec is None:
+            # Mirrors the defensive style around build_spec() in the probe
+            # loop below: a corrupted or hand-edited cache entry must
+            # degrade to "no cached value" and fall through to a normal
+            # probe — never raise and break every subsequent connection
+            # identically. INFO, not WARNING: a successful probe below will
+            # overwrite this bad entry with a freshly-verified one (see the
+            # cache write further down), so this is a self-healing recovery
+            # being logged, not a failure — but it still leaves a line a
+            # user reporting "it went slow again" can find.
+            log.info(
+                "Cached encoder record was malformed (%r) — discarding "
+                "and re-probing", cached,
+            )
+        elif spec.element and _encoder_runs(spec, width, height):
+            # Trust but verify: a cached encoder that no longer works — a GPU in
+            # use by another session, a driver that loaded differently — must not
+            # break the stream. Re-running it is far cheaper than the full probe.
             log.info("Encoder from cache: %s (%s, rate-control=%s)",
                      spec.element,
                      "hardware" if spec.is_hardware else "software",
                      spec.rate_control)
             _ENCODER_CACHE[key] = spec
             return spec
-        log.info("Cached encoder %s no longer usable — re-probing",
-                 spec.element)
+        else:
+            log.info("Cached encoder %s no longer usable — re-probing",
+                     spec.element)
 
     chosen = None
     for element in CANDIDATES:
