@@ -74,6 +74,17 @@ unaffected: the venv is `--system-site-packages`, `gi` resolves to
   injection. Coordinates are **scoped to the ScreenCast stream**, so the global
   desktop layout is never needed. Pairs via the session's `SessionId` property
   passed as `remote-desktop-session-id` to `CreateSession`.
+- **Once paired, the ScreenCast session must not be started or stopped
+  directly.** `Start()`/`Stop()` on it then raises *"Must be started/stopped
+  from remote desktop session"* — only the RemoteDesktop session's
+  `Start()`/`Stop()` drives both. `MutterVirtualDisplay.setup()` calls
+  `session.Start()` today, so it needs a paired-mode path.
+- The ScreenCast **Stream object exposes no size property** — only an opaque
+  `mapping-id`. Stream dimensions must be carried by the caller, which is why
+  `RemoteInput` takes width/height at construction rather than reading them
+  back.
+- `Stop()` on a session that was never started raises
+  `org.freedesktop.DBus.Error.Failed: Session not started`. Handle it.
 - `/dev/uinput` is `crw------- root root` — the kernel-level input alternative
   would need root or a udev rule. RemoteDesktop avoids that entirely.
 
