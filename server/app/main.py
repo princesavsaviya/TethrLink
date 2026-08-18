@@ -13,7 +13,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gio", "2.0")
 from gi.repository import Gtk, Gio, GLib
 from server.core.server_core import (
-    ServerCore, ServerConfig, ServerState, detect_codec,
+    ServerCore, ServerConfig, ServerState, detect_codec, CODEC_H264,
 )
 from server.ui.window import TethrLinkWindow
 
@@ -109,6 +109,8 @@ class TethrLinkApp(Gtk.Application):
             app=self,
             on_start=self._on_start,
             on_stop=self._on_stop,
+            on_codec_change=self._on_codec_change,
+            initial_codec="h264" if self._config.codec == CODEC_H264 else "jpeg",
         )
         self._window.set_server_running(False)
         self._window.present()
@@ -143,6 +145,7 @@ class TethrLinkApp(Gtk.Application):
             client_ip=s.client_name,
             fps=s.fps,
             resolution=s.resolution,
+            codec_name=s.codec_name,
         )
 
     def _on_log(self, message: str):
@@ -150,6 +153,11 @@ class TethrLinkApp(Gtk.Application):
 
     def _on_external_stop(self):
         GLib.idle_add(self._do_stop)
+
+    def _on_codec_change(self, codec_str: str):
+        self._config.codec = detect_codec(codec_str)
+        log.info("Codec set to %s via UI — applies to the next connection",
+                 codec_str)
 
     # ── Start / Stop ──────────────────────────────────────────────────────────
 
