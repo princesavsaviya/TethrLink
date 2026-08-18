@@ -1898,15 +1898,17 @@ class ServerCore:
                         last_sent_monotonic = time.monotonic()
                         idle_keepalives = 0
                     elif time.monotonic() - last_sent_monotonic >= KEEPALIVE_INTERVAL_S:
-                        # PipeWire delivers frames only on damage. A virtual
-                        # display with no windows on it never repaints, so
-                        # pipewiresrc emits nothing, videorate has no input to
-                        # repeat (it duplicates existing frames, it cannot
-                        # synthesise them), and the encoder produces nothing at
-                        # all. Asking for a keyframe here is useless on its
-                        # own — you cannot encode a frame that does not exist,
-                        # which is why the old request-only keepalive let the
-                        # stream die and the client reconnect-storm.
+                        # PipeWire delivers frames only on damage, so a virtual
+                        # display that never repaints leaves pipewiresrc silent
+                        # and the encoder with nothing to encode. Asking for a
+                        # keyframe here is useless on its own — you cannot
+                        # encode a frame that does not exist — which is why the
+                        # old request-only keepalive let the stream die and the
+                        # client reconnect-storm.
+                        #
+                        # The compositor upstream now supplies a constant rate,
+                        # so this should rarely fire. It remains the safety net
+                        # for the case where that path stalls anyway.
                         #
                         # Retransmit the last cached IDR instead. That is safe
                         # by H.264 semantics in a way retransmitting a delta
