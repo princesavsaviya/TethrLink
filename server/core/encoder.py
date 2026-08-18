@@ -162,15 +162,31 @@ def _va(cfg: EncoderConfig) -> Dict[str, str]:
 
 def _qsv(cfg: EncoderConfig) -> Dict[str, str]:
     props = {"gop-size": str(cfg.gop_length)}
+    # qsvh264enc is absent on this machine, so this is unverified: the
+    # GStreamer qsv plugin documents a `b-frames` property. If it turns out
+    # not to exist, the runtime verification step (instantiating and
+    # running each encoder before selecting it) will reject this encoder
+    # rather than silently leaving B-frames enabled.
+    props["b-frames"] = "0"
+    # Always set rate-control, the same as `_vaapi`/`_va` — only `bitrate`
+    # is skipped in CQP mode. This used to live inside the `!= CQP` guard,
+    # so CQP mode emitted no rate-control property at all and silently
+    # inherited whatever qsvh264enc defaults to.
+    props["rate-control"] = _rc_nick("qsvh264enc", cfg.rate_control)
     if cfg.rate_control != RateControl.CQP:
-        props["rate-control"] = _rc_nick("qsvh264enc", cfg.rate_control)
         props["bitrate"] = str(cfg.bitrate_kbps)
     return props
 
 
 def _v4l2(cfg: EncoderConfig) -> Dict[str, str]:
     # v4l2 encoders take tuning through a controls string rather than
-    # individual properties.
+    # individual properties. v4l2h264enc is also absent on this machine,
+    # and which controls a given device exposes is device-specific, so
+    # B-frame control is not portably expressible here — guessing a control
+    # name risks the element erroring outright on an unknown control. The
+    # runtime verification step (instantiating and running each encoder
+    # before selecting it) is the safety net for whatever this device
+    # actually supports.
     if cfg.rate_control == RateControl.CQP:
         return {}
     return {
@@ -181,6 +197,10 @@ def _v4l2(cfg: EncoderConfig) -> Dict[str, str]:
 
 
 def _openh264(cfg: EncoderConfig) -> Dict[str, str]:
+    # openh264enc exposes no B-frame control property at all — enumerating
+    # its properties via PyGObject shows no `bframes`, `b-frames`, or
+    # equivalent. Omitting it here is deliberate: do not "fix" this by
+    # adding a property, it would fail to parse against the real element.
     props = {"gop-size": str(cfg.gop_length)}
     if cfg.rate_control != RateControl.CQP:
         # openh264enc counts in bits per second, unlike every other encoder

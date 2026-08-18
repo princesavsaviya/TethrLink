@@ -176,3 +176,68 @@ def test_every_candidate_has_an_adapter():
     for element in CANDIDATES:
         built = build_spec(element, cfg, {RateControl.CBR, RateControl.CQP})
         assert built is not None, f"no adapter for {element}"
+
+
+def test_x264_cqp_mode_uses_qual_pass_and_a_quantizer():
+    cqp_cfg = EncoderConfig(
+        bitrate_kbps=25000, gop_length=45, rate_control=RateControl.CQP
+    )
+    spec = build_spec("x264enc", cqp_cfg, {RateControl.CQP})
+    assert spec.props["pass"] == "qual"
+    assert spec.props["quantizer"] == "21"
+    assert "bitrate" not in spec.props
+
+
+def test_vaapi_cqp_mode_sets_rate_control_cqp_and_skips_bitrate():
+    cqp_cfg = EncoderConfig(
+        bitrate_kbps=25000, gop_length=45, rate_control=RateControl.CQP
+    )
+    spec = build_spec("vaapih264enc", cqp_cfg, {RateControl.CQP})
+    assert spec.props["rate-control"] == "cqp"
+    assert "bitrate" not in spec.props
+
+
+def test_va_standard_element_is_exercised_independently():
+    """vah264enc shares the `_va` adapter with vah264lpenc but, before this
+    test, was only ever touched by the generic every-candidate smoke test."""
+    spec = build_spec("vah264enc", _cbr_config(), {RateControl.CBR})
+    assert spec.props["key-int-max"] == "45"
+    assert spec.props["b-frames"] == "0"
+    assert spec.props["rate-control"] == "cbr"
+    assert spec.props["bitrate"] == "25000"
+    assert spec.is_hardware is True
+
+
+def test_qsv_always_sets_rate_control_and_disables_bframes():
+    """Regression test: `_qsv` used to set `rate-control` and `bitrate`
+    inside the same `!= CQP` guard, so CQP mode emitted no rate-control
+    property at all and silently inherited whatever qsvh264enc defaults to.
+    It must set `rate-control` in both modes, like `_vaapi`/`_va` do, and
+    disable B-frames explicitly since defaults differ per encoder."""
+    cbr = build_spec("qsvh264enc", _cbr_config(), {RateControl.CBR})
+    assert cbr.props["rate-control"] == "cbr"
+    assert cbr.props["bitrate"] == "25000"
+    assert cbr.props["b-frames"] == "0"
+
+    cqp_cfg = EncoderConfig(
+        bitrate_kbps=25000, gop_length=45, rate_control=RateControl.CQP
+    )
+    cqp = build_spec("qsvh264enc", cqp_cfg, {RateControl.CQP})
+    assert cqp.props["rate-control"] == "cqp"
+    assert "bitrate" not in cqp.props
+    assert cqp.props["b-frames"] == "0"
+
+
+def test_v4l2_extra_controls_carries_bitrate_in_bps_and_iframe_period():
+    spec = build_spec("v4l2h264enc", _cbr_config(), {RateControl.CBR})
+    controls = spec.props["extra-controls"]
+    assert "video_bitrate=25000000" in controls
+    assert "h264_i_frame_period=45" in controls
+
+
+def test_v4l2_cqp_mode_yields_no_controls():
+    cqp_cfg = EncoderConfig(
+        bitrate_kbps=25000, gop_length=45, rate_control=RateControl.CQP
+    )
+    spec = build_spec("v4l2h264enc", cqp_cfg, {RateControl.CQP})
+    assert spec.props == {}
