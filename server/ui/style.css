@@ -134,6 +134,22 @@ window {
     margin-top: 2px;
 }
 
+.codec-dropdown {
+    background-color: #21262d;
+    color: #e6edf3;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 8px;
+    border: 1px solid #30363d;
+    padding: 4px 8px;
+}
+
+.codec-dropdown:disabled {
+    background-color: #161b22;
+    color: #484f58;
+    border-color: #21262d;
+}
+
 /* ── Status bar (running state header) ──────────────────────────────────────── */
 
 .status-bar {

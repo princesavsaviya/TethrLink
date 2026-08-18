@@ -4,6 +4,10 @@ Single scrollable page, two states:
 
   Stopped:  logo + welcome + Start Server button
   Running:  status bar + "Open Display Settings" link + Stop Server button
+
+A Video Codec card (JPEG/H.264) sits between the two and stays visible in
+both states. It is locked while a client is connected, since the pipeline
+is built once per connection and a change mid-stream would do nothing.
 """
 
 import os
@@ -33,11 +37,17 @@ def _label(text: str, css: str = "", halign=Gtk.Align.START,
 
 class TethrLinkWindow(Gtk.ApplicationWindow):
 
-    def __init__(self, app, on_start, on_stop):
+    # Dropdown row order — index must match the strings passed to
+    # Gtk.DropDown.new_from_strings() in _build_codec_settings().
+    _CODEC_VALUES = ("h264", "jpeg")
+
+    def __init__(self, app, on_start, on_stop, on_codec_change, initial_codec="h264"):
         super().__init__(application=app)
 
         self._on_start = on_start
         self._on_stop  = on_stop
+        self._on_codec_change = on_codec_change
+        self._initial_codec = initial_codec if initial_codec in self._CODEC_VALUES else "h264"
         self._updating = False
 
         self.set_title("TethrLink")
@@ -71,6 +81,7 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
         scroll.set_child(self._root)
 
         self._build_stopped_state()
+        self._build_codec_settings()
         self._build_status_bar()
         self._build_running_state()
 
@@ -116,6 +127,56 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
 
         self._stopped_box = box
         self._root.append(box)
+
+    # ── Codec settings ────────────────────────────────────────────────────────
+
+    def _build_codec_settings(self):
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        card.add_css_class("section-card")
+        card.set_margin_top(20)
+        card.set_margin_start(28)
+        card.set_margin_end(28)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        row.set_valign(Gtk.Align.CENTER)
+
+        icon = _label("🎞", "", Gtk.Align.START)
+        icon.set_css_classes([])
+
+        desc_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        desc_box.set_hexpand(True)
+        desc_box.append(_label("Video Codec", "setting-name"))
+        desc_box.append(_label(
+            "H.264 is sharper and lighter on bandwidth. A change applies\n"
+            "to the next connection — it's locked while streaming.",
+            "setting-hint", wrap=True,
+        ))
+
+        # Row order must match _CODEC_VALUES above.
+        self._codec_dropdown = Gtk.DropDown.new_from_strings(["H.264", "JPEG"])
+        self._codec_dropdown.add_css_class("codec-dropdown")
+        self._codec_dropdown.set_valign(Gtk.Align.CENTER)
+
+        self._updating = True
+        self._codec_dropdown.set_selected(self._CODEC_VALUES.index(self._initial_codec))
+        self._updating = False
+        self._codec_dropdown.connect("notify::selected", self._on_codec_selected)
+
+        row.append(icon)
+        row.append(desc_box)
+        row.append(self._codec_dropdown)
+        card.append(row)
+
+        # What is actually in use for the current session — set only while
+        # connected. On the X11 capture path the stream is always JPEG
+        # regardless of what's configured, so this can legitimately disagree
+        # with the dropdown above.
+        self._active_codec_label = _label("", "setting-hint", Gtk.Align.CENTER)
+        self._active_codec_label.set_margin_top(6)
+        card.append(self._active_codec_label)
+
+        self._codec_card = card
+        self._root.append(card)
 
     # ── Status bar ────────────────────────────────────────────────────────────
 
@@ -229,7 +290,11 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
             self._show_stopped()
 
     def update_status(self, connected: bool, client_ip: str = "",
-                      fps: int = 0, resolution: str = ""):
+                      fps: int = 0, resolution: str = "", codec_name: str = ""):
+        # The pipeline is built once per connection, so a codec change made
+        # mid-stream would silently do nothing. Lock the control while
+        # connected rather than accept an edit that has no effect.
+        self._codec_dropdown.set_sensitive(not connected)
         if connected:
             self._status_dot.remove_css_class("idle")
             self._status_dot.add_css_class("connected")
@@ -239,14 +304,25 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
             self._status_fps.set_label(f"{fps} FPS" if fps else "")
             if resolution:
                 self._res_label.set_label(f"Streaming at {resolution}")
+            self._active_codec_label.set_label(
+                f"Active this session: {codec_name}" if codec_name else ""
+            )
         else:
             self._status_dot.remove_css_class("connected")
             self._status_dot.add_css_class("idle")
             self._status_text.set_label("Waiting for tablet…")
             self._status_fps.set_label("")
             self._res_label.set_label("")
+            self._active_codec_label.set_label("")
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
+
+    def _on_codec_selected(self, dropdown, _pspec):
+        if self._updating:
+            return
+        idx = dropdown.get_selected()
+        if 0 <= idx < len(self._CODEC_VALUES):
+            self._on_codec_change(self._CODEC_VALUES[idx])
 
     def _open_display_settings(self, _btn):
         try:

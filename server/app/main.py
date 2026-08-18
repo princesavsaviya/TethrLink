@@ -12,7 +12,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gio", "2.0")
 from gi.repository import Gtk, Gio, GLib
-from server.core.server_core import ServerCore, ServerConfig, ServerState
+from server.core.server_core import (
+    ServerCore, ServerConfig, ServerState, detect_codec, CODEC_H264,
+)
 from server.ui.window import TethrLinkWindow
 
 
@@ -47,6 +49,33 @@ class TethrLinkApp(Gtk.Application):
             flags=Gio.ApplicationFlags.FLAGS_NONE,
         )
         self._config     = ServerConfig()
+        # Codec override for testing/comparison. ServerConfig now defaults to
+        # H.264; set TETHRLINK_CODEC=jpeg to fall back to the old path, or
+        # TETHRLINK_CODEC=h264 to be explicit about it.
+        _codec_env = os.environ.get("TETHRLINK_CODEC")
+        if _codec_env:
+            self._config.codec = detect_codec(_codec_env.strip().lower())
+            log.info("Codec overridden via TETHRLINK_CODEC=%s", _codec_env)
+
+        # Resolution override for testing, e.g. TETHRLINK_RES=1920x1080.
+        # Capture normally matches the connected device exactly, which is the
+        # sharpest arrangement but also the most expensive to decode: a
+        # 2960x1848 stream at 30 fps asks the tablet for roughly 164 Mpx/s.
+        # Forcing a smaller size trades some sharpness for decode headroom,
+        # which is worth measuring rather than guessing at.
+        _res_env = os.environ.get("TETHRLINK_RES")
+        if _res_env:
+            try:
+                w_str, h_str = _res_env.strip().lower().split("x", 1)
+                self._config.width = int(w_str)
+                self._config.height = int(h_str)
+                log.info("Resolution overridden via TETHRLINK_RES=%dx%d",
+                         self._config.width, self._config.height)
+            except (ValueError, AttributeError):
+                log.warning(
+                    "Ignoring malformed TETHRLINK_RES=%r — expected WIDTHxHEIGHT, "
+                    "e.g. 1920x1080", _res_env)
+
         self._state      = ServerState()
         self._core       = None
         self._window     = None
@@ -80,6 +109,8 @@ class TethrLinkApp(Gtk.Application):
             app=self,
             on_start=self._on_start,
             on_stop=self._on_stop,
+            on_codec_change=self._on_codec_change,
+            initial_codec="h264" if self._config.codec == CODEC_H264 else "jpeg",
         )
         self._window.set_server_running(False)
         self._window.present()
@@ -114,6 +145,7 @@ class TethrLinkApp(Gtk.Application):
             client_ip=s.client_name,
             fps=s.fps,
             resolution=s.resolution,
+            codec_name=s.codec_name,
         )
 
     def _on_log(self, message: str):
@@ -121,6 +153,11 @@ class TethrLinkApp(Gtk.Application):
 
     def _on_external_stop(self):
         GLib.idle_add(self._do_stop)
+
+    def _on_codec_change(self, codec_str: str):
+        self._config.codec = detect_codec(codec_str)
+        log.info("Codec set to %s via UI — applies to the next connection",
+                 codec_str)
 
     # ── Start / Stop ──────────────────────────────────────────────────────────
 
