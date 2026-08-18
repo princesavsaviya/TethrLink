@@ -96,7 +96,7 @@ class ServerConfig:
     fps: int = 45
     quality: int = 90
     codec: int = CODEC_JPEG
-    bitrate: int = 3000
+    bitrate: int = 0        # 0 = derive automatically from resolution and frame rate
     h264_width: int = 1280
     port: int = 51137
     width: int = 0          # 0 = use device dims (auto)
@@ -1394,12 +1394,18 @@ class ServerCore:
 
                 enc_spec = None
                 if codec == CODEC_H264:
+                    bitrate_kbps = (
+                        self._config.bitrate
+                        if self._config.bitrate > 0
+                        else default_bitrate_kbps(width, height, self._live_fps)
+                    )
+                    bitrate_source = (
+                        "explicitly configured" if self._config.bitrate > 0
+                        else "derived from resolution/fps"
+                    )
+                    self._log(f"H.264 bitrate: {bitrate_kbps} kbps ({bitrate_source})")
                     enc_spec = select_encoder(EncoderConfig(
-                        bitrate_kbps=(
-                            self._config.bitrate
-                            if self._config.bitrate > 0
-                            else default_bitrate_kbps(width, height, self._live_fps)
-                        ),
+                        bitrate_kbps=bitrate_kbps,
                         gop_length=self._live_fps,
                         rate_control=RateControl.CBR,
                     ))
