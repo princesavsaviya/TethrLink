@@ -534,16 +534,31 @@ def probe_rate_controls(element: str) -> set:
         return set()
 
 
-def _encoder_runs(spec: EncoderSpec) -> bool:
-    """Actually encode a frame. Presence and properties are not enough.
+def _encoder_runs(spec: EncoderSpec, width: int, height: int) -> bool:
+    """Actually encode a frame, at the size about to be used. Presence and
+    properties are not enough.
 
     vaapih264enc advertises cbr and still fails with an internal data stream
     error at runtime on this hardware, so nothing short of running it counts
     as verification.
+
+    The size matters as much as the element does. This used to verify at a
+    fixed 320x240, which every encoder passes — including ones with a level or
+    frame-size ceiling below the real capture size (v4l2h264enc is commonly
+    capped at 1920x1080, and low-power VA encoders have their own limits).
+    Such an encoder passed the toy test, got selected, and then failed
+    negotiation at the real size, ending the session. Verifying at the actual
+    resolution is the only test that answers the question being asked.
+
+    `num-buffers=2` is the minimum that exercises a real inter-frame encode
+    (one keyframe plus one predicted frame) and is kept deliberately low: the
+    frames are now full-size, so each one costs real memory and time. The 5s
+    per-candidate timeout is unchanged — a full re-probe stays bounded at
+    len(CANDIDATES) * 5s.
     """
     desc = (
         f"videotestsrc num-buffers=2 ! "
-        f"video/x-raw,format=NV12,width=320,height=240,framerate=30/1 ! "
+        f"video/x-raw,format=NV12,width={width},height={height},framerate=30/1 ! "
         f"{spec.to_pipeline_fragment()} ! fakesink sync=false"
     )
     pipeline = None
@@ -563,15 +578,21 @@ def _encoder_runs(spec: EncoderSpec) -> bool:
             pipeline.set_state(Gst.State.NULL)
 
 
-def select_encoder(config: EncoderConfig):
-    """Pick the best encoder that actually works, hardware first.
+def select_encoder(config: EncoderConfig, width: int, height: int):
+    """Pick the best encoder that actually works at this size, hardware first.
 
     Result is cached: probing instantiates pipelines, which is too expensive
     to repeat per client connection. Only a successful (non-None) selection
     is cached — see the comment above the cache write below for why.
+
+    The capture size is part of the cache key, not just an argument. An
+    encoder that works at one resolution can fail at another (level and
+    frame-size ceilings), so a device connecting with different dimensions
+    must trigger fresh verification rather than inheriting a verdict reached
+    for some other size.
     """
     key = (config.rate_control, config.gop_length, config.bitrate_kbps,
-           config.low_latency)
+           config.low_latency, width, height)
     if key in _ENCODER_CACHE:
         return _ENCODER_CACHE[key]
 
@@ -587,8 +608,9 @@ def select_encoder(config: EncoderConfig):
             spec = build_spec(element, config, probe_rate_controls(element))
             if spec is None:
                 continue
-            if not _encoder_runs(spec):
-                log.info("Encoder %s present but not usable — skipping", element)
+            if not _encoder_runs(spec, width, height):
+                log.info("Encoder %s present but not usable at %dx%d — skipping",
+                         element, width, height)
                 continue
         except Exception as e:
             log.warning(
@@ -600,12 +622,12 @@ def select_encoder(config: EncoderConfig):
         break
 
     if chosen is None:
-        log.error("No usable H.264 encoder found")
+        log.error("No usable H.264 encoder found at %dx%d", width, height)
     else:
-        log.info("Encoder selected: %s (%s, rate-control=%s)",
+        log.info("Encoder selected: %s (%s, rate-control=%s, verified at %dx%d)",
                  chosen.element,
                  "hardware" if chosen.is_hardware else "software",
-                 chosen.rate_control)
+                 chosen.rate_control, width, height)
     # Only cache a successful selection. Caching None here would latch "no
     # usable encoder" for this config for the rest of the process's
     # lifetime with no retry — a transient failure (a momentarily busy GPU,
@@ -1445,11 +1467,14 @@ class ServerCore:
                         else "derived from resolution/fps"
                     )
                     self._log(f"H.264 bitrate: {bitrate_kbps} kbps ({bitrate_source})")
-                    enc_spec = select_encoder(EncoderConfig(
-                        bitrate_kbps=bitrate_kbps,
-                        gop_length=self._live_fps,
-                        rate_control=RateControl.CBR,
-                    ))
+                    enc_spec = select_encoder(
+                        EncoderConfig(
+                            bitrate_kbps=bitrate_kbps,
+                            gop_length=self._live_fps,
+                            rate_control=RateControl.CBR,
+                        ),
+                        width, height,
+                    )
 
                 capture = PipeWireCapture(
                     node_id, width, height, codec,
