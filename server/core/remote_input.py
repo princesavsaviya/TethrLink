@@ -1,0 +1,204 @@
+"""D-Bus binding for Mutter's RemoteDesktop pointer injection.
+
+Thin by design. The logic that has to be right — coordinate scaling and the
+wire-to-evdev button mapping — lives in input_protocol.py and is unit
+tested there without a GNOME session. This module's only job is talking to
+org.gnome.Mutter.RemoteDesktop, using the same dbus + GLib-mainloop idiom as
+MutterVirtualDisplay in server_core.py (dbus.SessionBus, dbus.Interface, a
+DBusGMainLoop already installed as the default by server_core at import
+time).
+
+Input is an addition bolted onto a video pipeline that already ships.
+**Every public method here is exception-safe**: a D-Bus failure is logged
+and the event dropped — never retried, since a stale pointer event is
+worthless — and never re-raised, since a hiccup on this path must not be
+allowed to touch streaming. This project has already shipped one defect
+where an auxiliary failure broke the main path; this module's job is to not
+repeat that mistake for input.
+
+`create()` returning `None` is not an error condition — it means "no input
+for this session," which the caller (a later task) is expected to treat as
+a normal, supported outcome and continue video-only.
+"""
+
+import logging
+import time
+from typing import Optional
+
+import dbus
+
+from server.core.input_protocol import to_stream_coords
+
+log = logging.getLogger("TethrLink")
+
+RD_BUS    = "org.gnome.Mutter.RemoteDesktop"
+RD_PATH   = "/org/gnome/Mutter/RemoteDesktop"
+RD_IF     = "org.gnome.Mutter.RemoteDesktop"
+RD_SES_IF = "org.gnome.Mutter.RemoteDesktop.Session"
+PROPS_IF  = "org.freedesktop.DBus.Properties"
+
+# Default motion-coalescing window: at most one NotifyPointerMotionAbsolute
+# dispatch per this many seconds. Matches ServerConfig's default capture
+# rate (fps = 30 in server_core.py) since each dispatch is a synchronous
+# D-Bus round trip and a touch drag generates events far faster than the
+# display refreshes. A caller running the stream at a different fps may
+# pass its own interval to __init__.
+DEFAULT_FRAME_INTERVAL_S = 1.0 / 30
+
+
+class RemoteInput:
+    """Binds one Mutter RemoteDesktop session and drives the pointer on the
+    paired ScreenCast stream's own coordinate space.
+
+    Usage, mirroring the RemoteDesktop/ScreenCast pairing requirement:
+        ri = RemoteInput(width, height)          # same target size handed to
+                                                  # MutterVirtualDisplay, since
+                                                  # both describe the same
+                                                  # virtual monitor
+        session_id = ri.create()                # None => no input this session
+        if session_id is not None:
+            # ... create the ScreenCast session with
+            #     remote-desktop-session-id = session_id ...
+            ri.bind_stream(stream_path)
+            ri.start()                           # after the ScreenCast stream exists
+        ...
+        ri.move(nx, ny)      # normalised [0,1], coalesced
+        ri.button(code, True)
+        ri.axis(dx, dy)
+        ri.stop()
+
+    `width`/`height` are taken at construction rather than in bind_stream(),
+    because they are not discoverable from the ScreenCast D-Bus API at all —
+    the Stream object's only property is an opaque `mapping-id` (verified by
+    introspection). The real pixel size a stream ends up with is whatever its
+    PipeWire consumer negotiates (see the comment on MutterVirtualDisplay's
+    RecordVirtual call in server_core.py), which in this codebase is always
+    the same width/height already decided before any session exists — the
+    one forced through the capture pipeline's caps filter. So the caller
+    already has this value up front, same as MutterVirtualDisplay(width,
+    height, bus), and passing it here keeps to_stream_coords honest about
+    the space NotifyPointerMotionAbsolute actually addresses.
+    """
+
+    def __init__(self, width: int, height: int,
+                 bus: Optional[dbus.SessionBus] = None,
+                 frame_interval_s: float = DEFAULT_FRAME_INTERVAL_S):
+        self._width = width
+        self._height = height
+        self._bus = bus or dbus.SessionBus()
+        self._frame_interval_s = frame_interval_s
+        self._session: Optional[dbus.Interface] = None
+        self._stream_path: Optional[str] = None
+        self._last_motion_dispatch = 0.0
+
+    def create(self) -> Optional[str]:
+        """Create a RemoteDesktop session and return its SessionId.
+
+        The caller passes this id as `remote-desktop-session-id` in the
+        properties dict of ScreenCast's CreateSession, which is what binds
+        the two sessions together. Returns None on any failure — video must
+        proceed with or without this.
+        """
+        session_obj = None
+        try:
+            rd_obj = self._bus.get_object(RD_BUS, RD_PATH)
+            rd = dbus.Interface(rd_obj, RD_IF)
+            session_path = str(rd.CreateSession())
+            session_obj = self._bus.get_object(RD_BUS, session_path)
+            props = dbus.Interface(session_obj, PROPS_IF)
+            session_id = str(props.Get(RD_SES_IF, "SessionId"))
+            self._session = dbus.Interface(session_obj, RD_SES_IF)
+            return session_id
+        except Exception as e:
+            log.warning("RemoteInput.create failed — continuing without input: %s", e)
+            self._session = None
+            # CreateSession may have already succeeded on the bus even
+            # though a later step (reading SessionId) failed — best-effort
+            # avoid leaving an orphaned, never-started session behind.
+            # Stop() on one raises "Session not started", which is exactly
+            # the expected/swallowed case here.
+            if session_obj is not None:
+                try:
+                    dbus.Interface(session_obj, RD_SES_IF).Stop()
+                except Exception:
+                    pass
+            return None
+
+    def start(self) -> None:
+        """Start the session. Call after the paired ScreenCast session has
+        been created, since the two are bound by session id at that point."""
+        if self._session is None:
+            return
+        try:
+            self._session.Start()
+        except Exception as e:
+            log.warning("RemoteInput.start failed: %s", e)
+
+    def bind_stream(self, stream_path: str) -> None:
+        """Record the ScreenCast stream path pointer coordinates are scoped
+        to. The pixel dimensions for scaling were already given in
+        __init__ — see the class docstring for why."""
+        self._stream_path = stream_path
+
+    def move(self, nx: float, ny: float) -> None:
+        """Move the pointer to a normalised [0,1] position on the bound
+        stream.
+
+        Coalesced to at most one dispatch per frame interval: callers may
+        invoke this far faster than that (a touch drag easily beats the
+        display's refresh rate), and only the most recent position as of
+        each interval boundary is actually sent over D-Bus — never the
+        first of a burst, since a stale coordinate is worse than a dropped
+        one.
+        """
+        if self._session is None or self._stream_path is None:
+            return
+        now = time.monotonic()
+        if now - self._last_motion_dispatch < self._frame_interval_s:
+            return
+        coords = to_stream_coords(nx, ny, self._width, self._height)
+        if coords is None:
+            return
+        x, y = coords
+        # Mark the interval consumed before the round trip so a D-Bus
+        # failure can't turn into a retry storm on the very next call.
+        self._last_motion_dispatch = now
+        try:
+            self._session.NotifyPointerMotionAbsolute(self._stream_path, x, y)
+        except Exception as e:
+            log.debug("RemoteInput.move dropped: %s", e)
+
+    def button(self, code: int, pressed: bool) -> None:
+        """Notify a pointer button edge. Never coalesced — a click is a
+        discrete event, not a stream of redundant samples."""
+        if self._session is None:
+            return
+        try:
+            self._session.NotifyPointerButton(code, pressed)
+        except Exception as e:
+            log.debug("RemoteInput.button dropped: %s", e)
+
+    def axis(self, dx: float, dy: float) -> None:
+        """Notify a scroll delta. Never coalesced — each delta is relative,
+        so dropping one loses scroll distance rather than just staleness."""
+        if self._session is None:
+            return
+        try:
+            self._session.NotifyPointerAxis(dx, dy, 0)
+        except Exception as e:
+            log.debug("RemoteInput.axis dropped: %s", e)
+
+    def stop(self) -> None:
+        """Stop the session. Safe to call twice, and safe to call on a
+        session that was never started — Mutter raises
+        org.freedesktop.DBus.Error.Failed: Session not started in that
+        case, which is expected and swallowed here, not exceptional."""
+        if self._session is None:
+            return
+        try:
+            self._session.Stop()
+        except Exception as e:
+            log.debug("RemoteInput.stop: %s", e)
+        finally:
+            self._session = None
+            self._stream_path = None
