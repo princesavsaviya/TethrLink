@@ -713,6 +713,11 @@ class PipeWireCapture:
                 f"! {encoder_fragment} "
                 f"! h264parse config-interval=-1 "
                 f"! video/x-h264,stream-format=byte-stream,alignment=au,profile=high "
+                # drop=false: everything downstream of the encoder is lossless.
+                # Dropping an encoded inter-frame breaks the decoder's
+                # reference chain and corrupts every frame until the next
+                # keyframe, which is why dropping is confined to the leaky
+                # queue upstream of the encoder.
                 f"! appsink name=sink emit-signals=true "
                 f"  max-buffers={APPSINK_MAX_BUFFERS} drop=false sync=false"
             )
