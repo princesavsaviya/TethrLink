@@ -56,6 +56,26 @@ class TethrLinkApp(Gtk.Application):
         if _codec_env:
             self._config.codec = detect_codec(_codec_env.strip().lower())
             log.info("Codec overridden via TETHRLINK_CODEC=%s", _codec_env)
+
+        # Resolution override for testing, e.g. TETHRLINK_RES=1920x1080.
+        # Capture normally matches the connected device exactly, which is the
+        # sharpest arrangement but also the most expensive to decode: a
+        # 2960x1848 stream at 30 fps asks the tablet for roughly 164 Mpx/s.
+        # Forcing a smaller size trades some sharpness for decode headroom,
+        # which is worth measuring rather than guessing at.
+        _res_env = os.environ.get("TETHRLINK_RES")
+        if _res_env:
+            try:
+                w_str, h_str = _res_env.strip().lower().split("x", 1)
+                self._config.width = int(w_str)
+                self._config.height = int(h_str)
+                log.info("Resolution overridden via TETHRLINK_RES=%dx%d",
+                         self._config.width, self._config.height)
+            except (ValueError, AttributeError):
+                log.warning(
+                    "Ignoring malformed TETHRLINK_RES=%r — expected WIDTHxHEIGHT, "
+                    "e.g. 1920x1080", _res_env)
+
         self._state      = ServerState()
         self._core       = None
         self._window     = None
