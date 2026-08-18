@@ -476,44 +476,61 @@ def probe_rate_controls(element: str) -> set:
     Elements with no rate-control property at all (v4l2h264enc, openh264enc)
     are reported as supporting everything, because their adapters express
     rate control through other properties entirely.
+
+    Never raises. This runs on the client connection path (via
+    select_encoder), and a GStreamer diagnostic escaping from here would be
+    exactly the bug class log_gstreamer_preflight() below is already
+    defensive about — it could prevent the caller (ServerCore.__init__) from
+    ever completing. Any unexpected failure is treated as "this element
+    offers nothing usable" (empty set) and logged, never swallowed silently.
     """
-    # Gst.ElementFactory.find() silently returns None for every element,
-    # hardware included, until Gst.init() has run — and this is the first
-    # Gst call standalone callers (this task's own verification script,
-    # select_encoder() before any ServerCore exists) make. Idempotent, like
-    # every other Gst.init(None) call in this file.
-    Gst.init(None)
-    factory = Gst.ElementFactory.find(element)
-    if factory is None:
-        return set()
     try:
-        el = factory.create(None)
-    except Exception:
-        return set()
-    if el is None:
-        return set()
-
-    prop_name = RC_PROPERTY.get(element)
-    if prop_name is None:
-        return {RateControl.CBR, RateControl.VBR, RateControl.CQP}
-
-    try:
-        if el.find_property(prop_name) is None:
-            return {RateControl.CBR, RateControl.VBR, RateControl.CQP}
-    except Exception:
-        return {RateControl.CBR, RateControl.VBR, RateControl.CQP}
-
-    modes = set()
-    for mode in (RateControl.CBR, RateControl.VBR, RateControl.CQP):
-        nick = RC_NICKS.get(element, {}).get(mode)
-        if nick is None:
-            continue
+        # Gst.ElementFactory.find() silently returns None for every element,
+        # hardware included, until Gst.init() has run — and this is the first
+        # Gst call standalone callers (this task's own verification script,
+        # select_encoder() before any ServerCore exists) make. Idempotent, like
+        # every other Gst.init(None) call in this file.
+        Gst.init(None)
+        factory = Gst.ElementFactory.find(element)
+        if factory is None:
+            return set()
         try:
-            el.set_property(prop_name, nick)
-            modes.add(mode)
+            el = factory.create(None)
         except Exception:
-            pass
-    return modes
+            return set()
+        if el is None:
+            return set()
+
+        prop_name = RC_PROPERTY.get(element)
+        if prop_name is None:
+            return {RateControl.CBR, RateControl.VBR, RateControl.CQP}
+
+        try:
+            if el.find_property(prop_name) is None:
+                return {RateControl.CBR, RateControl.VBR, RateControl.CQP}
+        except Exception:
+            return {RateControl.CBR, RateControl.VBR, RateControl.CQP}
+
+        modes = set()
+        for mode in (RateControl.CBR, RateControl.VBR, RateControl.CQP):
+            nick = RC_NICKS.get(element, {}).get(mode)
+            if nick is None:
+                continue
+            try:
+                el.set_property(prop_name, nick)
+                modes.add(mode)
+            except Exception:
+                pass
+        return modes
+    except Exception as e:
+        # Catches failures in Gst.init(None)/Gst.ElementFactory.find(), which
+        # sit outside every try/except above — everything else in this
+        # function already narrows its own exceptions and returns early.
+        log.warning(
+            "probe_rate_controls(%s) failed unexpectedly — assuming no "
+            "usable rate-control modes: %s", element, e
+        )
+        return set()
 
 
 def _encoder_runs(spec: EncoderSpec) -> bool:
@@ -549,7 +566,8 @@ def select_encoder(config: EncoderConfig):
     """Pick the best encoder that actually works, hardware first.
 
     Result is cached: probing instantiates pipelines, which is too expensive
-    to repeat per client connection.
+    to repeat per client connection. Only a successful (non-None) selection
+    is cached — see the comment above the cache write below for why.
     """
     key = (config.rate_control, config.gop_length, config.bitrate_kbps,
            config.low_latency)
@@ -558,11 +576,24 @@ def select_encoder(config: EncoderConfig):
 
     chosen = None
     for element in CANDIDATES:
-        spec = build_spec(element, config, probe_rate_controls(element))
-        if spec is None:
-            continue
-        if not _encoder_runs(spec):
-            log.info("Encoder %s present but not usable — skipping", element)
+        # Runs on the client connection path, same as probe_rate_controls()
+        # above. probe_rate_controls()/_encoder_runs() are already
+        # exception-safe on their own, but build_spec() (encoder.py) is not
+        # under this function's control — one pathological candidate must
+        # not abort selection for every candidate ranked below it. Log and
+        # move on to the next one instead of propagating.
+        try:
+            spec = build_spec(element, config, probe_rate_controls(element))
+            if spec is None:
+                continue
+            if not _encoder_runs(spec):
+                log.info("Encoder %s present but not usable — skipping", element)
+                continue
+        except Exception as e:
+            log.warning(
+                "Encoder candidate %s raised during probing — skipping: %s",
+                element, e
+            )
             continue
         chosen = spec
         break
@@ -574,7 +605,17 @@ def select_encoder(config: EncoderConfig):
                  chosen.element,
                  "hardware" if chosen.is_hardware else "software",
                  chosen.rate_control)
-    _ENCODER_CACHE[key] = chosen
+    # Only cache a successful selection. Caching None here would latch "no
+    # usable encoder" for this config for the rest of the process's
+    # lifetime with no retry — a transient failure (a momentarily busy GPU,
+    # a slow _encoder_runs bus wait) would need an app restart to ever get
+    # hardware encoding again. Leaving None uncached means a machine with
+    # genuinely no usable encoder re-probes on every connection instead of
+    # once, but that path stays bounded: _encoder_runs already caps each
+    # candidate at a 5s timeout, so a full re-probe is capped at
+    # len(CANDIDATES) * 5s, not unbounded — do not raise that timeout.
+    if chosen is not None:
+        _ENCODER_CACHE[key] = chosen
     return chosen
 
 
