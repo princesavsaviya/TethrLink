@@ -33,6 +33,7 @@ from server.core.preflight import (
     probe_encoders,
 )
 from server.core.frame_queue import EncodedFrameQueue, LatestFrameSlot
+from server.core.geometry import resolve_capture_size
 from server.core.metrics import StreamMetrics
 from server.core.encoder import (
     CANDIDATES,
@@ -678,11 +679,6 @@ class PipeWireCapture:
         self._loop = GLib.MainLoop()
 
         if codec == CODEC_H264:
-            aspect = width / height
-            h264_h = int(h264_width / aspect)
-            if h264_h % 2 != 0:
-                h264_h += 1
-
             if self._encoder_spec is not None:
                 encoder_fragment = self._encoder_spec.to_pipeline_fragment()
             else:
@@ -703,16 +699,20 @@ class PipeWireCapture:
 
             pipeline_str = (
                 f"pipewiresrc path={node_id} always-copy=true "
+                # This caps filter is what determines the virtual monitor's
+                # size — Mutter's RecordVirtual takes no size arguments, the
+                # size comes from PipeWire format negotiation. The JPEG branch
+                # always had this; the H.264 branch did not, which is why it
+                # got Mutter's default and then rescaled.
+                f"! video/x-raw,width={width},height={height} "
                 # Dropping RAW frames is safe — it only lowers framerate.
-                # This is the one place in the pipeline where dropping is allowed.
                 f"! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 "
                 f"! videorate "
-                f"! videoconvert ! videoscale "
-                f"! video/x-raw,format=NV12,width={h264_width},height={h264_h},framerate={fps}/1,colorimetry=bt709 "
+                f"! videoconvert "
+                f"! video/x-raw,format=NV12,framerate={fps}/1,colorimetry=bt709 "
                 f"! {encoder_fragment} "
                 f"! h264parse config-interval=-1 "
                 f"! video/x-h264,stream-format=byte-stream,alignment=au,profile=high "
-                # drop=false: everything downstream of the encoder is lossless.
                 f"! appsink name=sink emit-signals=true "
                 f"  max-buffers={APPSINK_MAX_BUFFERS} drop=false sync=false"
             )
@@ -1320,19 +1320,28 @@ class ServerCore:
         # reconnect with MAGIC_BUSY. The send loop now checks this event.
         session_stop = threading.Event()
 
-        # ── Save device dims for reference (used by UI canvas, not for resolution) ──
+        # ── Save device dims: these now drive the capture resolution itself
+        # (see resolve_capture_size below), not just the UI canvas ──
         if screen_w > 0 and screen_h > 0:
             self._config.device_width  = screen_w
             self._config.device_height = screen_h
 
-        # ── Resolve resolution: user config override → PC's primary monitor ──
-        # The virtual display always matches the PC's main screen unless the
-        # user has explicitly set a custom resolution in the config.
+        # ── Resolve resolution: user config override → device's own dims → PC's primary monitor ──
+        # The virtual display matches the connected device's resolution by default, so
+        # capture, encode, decode and render all agree on one size and nothing is
+        # rescaled. An explicit user-configured resolution always wins; the PC's
+        # primary monitor is only a last-resort fallback when the device reports none.
+        mon_w, mon_h = resolve_resolution(self._bus, 0, 0)
+        width, height = resolve_capture_size(
+            device_w=screen_w, device_h=screen_h,
+            config_w=self._config.width, config_h=self._config.height,
+            monitor_w=mon_w, monitor_h=mon_h,
+        )
         if self._config.width > 0 and self._config.height > 0:
-            width, height = self._config.width, self._config.height
             self._log(f"Using configured resolution: {width}×{height}")
+        elif screen_w > 0 and screen_h > 0:
+            self._log(f"Matching device resolution: {width}×{height}")
         else:
-            width, height = resolve_resolution(self._bus, 0, 0)
             self._log(f"Using primary monitor resolution: {width}×{height}")
         self._state.update_direct(active_width=width, active_height=height)
 
