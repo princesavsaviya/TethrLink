@@ -224,6 +224,75 @@ def test_only_a_keyframe_reopens_the_queue_after_overflow():
     assert [q.get(0.1).data for _ in range(2)] == [b"idr", b"f"]
 
 
+# ── Gate armed by the idle keepalive, not by an overflow ─────────────────────
+
+def test_require_keyframe_arms_the_gate_without_an_overflow():
+    """The send loop retransmits a cached IDR when the source goes idle; the
+    decoder's reference state then no longer matches the encoder's, so the
+    gate must be armable directly."""
+    q = EncodedFrameQueue(maxsize=4)
+    q.put(b"idr", is_keyframe=True)
+    assert q.needs_keyframe is False
+    q.require_keyframe()
+    assert q.needs_keyframe is True
+
+
+def test_require_keyframe_rejects_deltas_until_a_fresh_keyframe():
+    m = StreamMetrics()
+    q = EncodedFrameQueue(maxsize=4, metrics=m)
+    q.put(b"idr", is_keyframe=True)
+    assert q.get(0.1).data == b"idr"
+
+    q.require_keyframe()  # idle keepalive retransmitted that IDR
+    # Frames resume, but the encoder's reference chain does not match the
+    # decoder's, so every delta is unsendable and explicitly dropped.
+    assert q.put(b"delta1", is_keyframe=False) is False
+    assert q.put(b"delta2", is_keyframe=False) is False
+    assert q.get(0.05) is None
+    assert m.snapshot()["frames_dropped"] == 2
+
+    # A fresh IDR resyncs both ends and clears the gate.
+    assert q.put(b"idr2", is_keyframe=True) is True
+    assert q.needs_keyframe is False
+    assert q.get(0.1).data == b"idr2"
+    assert q.put(b"delta3", is_keyframe=False) is True
+    assert q.get(0.1).data == b"delta3"
+
+
+def test_require_keyframe_does_not_count_as_an_overflow():
+    """Arming the gate is not a failure: it must not inflate queue_overflows
+    or invoke the overflow callback."""
+    m = StreamMetrics()
+    calls = []
+    q = EncodedFrameQueue(maxsize=4, metrics=m,
+                         on_overflow=lambda: calls.append(1))
+    q.put(b"idr", is_keyframe=True)
+    q.require_keyframe()
+    q.put(b"delta")  # gated
+    assert m.snapshot()["queue_overflows"] == 0
+    assert calls == []
+
+
+def test_require_keyframe_is_idempotent():
+    q = EncodedFrameQueue(maxsize=4)
+    q.require_keyframe()
+    q.require_keyframe()
+    assert q.needs_keyframe is True
+    assert q.put(b"idr", is_keyframe=True) is True
+    assert q.needs_keyframe is False
+
+
+def test_require_keyframe_does_not_discard_the_queued_backlog():
+    """Unlike an overflow, arming the gate has no reason to drain: the frames
+    already queued were produced before the retransmission and are still
+    consistent with what the decoder had at that point."""
+    q = EncodedFrameQueue(maxsize=4)
+    q.put(b"idr", is_keyframe=True)
+    q.put(b"delta")
+    q.require_keyframe()
+    assert [q.get(0.1).data for _ in range(2)] == [b"idr", b"delta"]
+
+
 # ── frames_encoded honesty ───────────────────────────────────────────────────
 
 def test_frames_encoded_excludes_the_overflowing_frame():

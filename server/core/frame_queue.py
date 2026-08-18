@@ -44,9 +44,11 @@ class EncodedFrameQueue:
         self._seq = 0
         self._lock = threading.Lock()
         self._closed = False
-        # Set on overflow: the backlog was discarded, so the decoder's
-        # reference chain is broken and every delta frame until the next
-        # IDR is unsendable. Cleared by the first keyframe that arrives.
+        # Set whenever the decoder's reference chain is known to be broken
+        # and every delta frame until the next IDR is therefore unsendable:
+        # on overflow (the backlog was discarded), or by require_keyframe()
+        # when the send loop retransmitted a cached IDR as an idle
+        # keepalive. Cleared by the first keyframe that arrives.
         self._needs_keyframe = False
 
     def _count(self, name: str, n: int = 1) -> None:
@@ -55,10 +57,34 @@ class EncodedFrameQueue:
 
     @property
     def needs_keyframe(self) -> bool:
-        """True while the stream is waiting for an IDR to resync after an
-        overflow. Non-keyframes are rejected by put() while this holds."""
+        """True while the stream is waiting for an IDR to resync (after an
+        overflow, or after an idle-keepalive IDR retransmission — see
+        require_keyframe()). Non-keyframes are rejected by put() while
+        this holds."""
         with self._lock:
             return self._needs_keyframe
+
+    def require_keyframe(self) -> None:
+        """Arm the keyframe gate from outside an overflow.
+
+        Same state, same guarantee as the overflow path: until an IDR
+        arrives, put() rejects delta frames because they reference a
+        picture the decoder no longer holds.
+
+        The second caller is the send loop's idle keepalive. When the
+        capture source goes quiet (PipeWire only delivers on damage, so a
+        virtual display with nothing repainting on it produces no frames
+        at all), the loop retransmits the last cached IDR to keep the
+        connection alive. That leaves the decoder's reference state at
+        "just decoded that IDR" while the encoder's own reference state is
+        wherever it actually left off — so the next delta frame the
+        encoder emits would decode against the wrong picture. Arming the
+        gate here makes that frame unsendable until a fresh IDR resyncs
+        both ends, which is exactly the invariant this class already
+        enforces after an overflow.
+        """
+        with self._lock:
+            self._needs_keyframe = True
 
     def put(self, data: bytes, is_keyframe: bool = False) -> bool:
         """Enqueue an encoded frame.

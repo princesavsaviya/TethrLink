@@ -134,6 +134,100 @@ def test_h264_encoded_accessor_returns_observed_dimensions():
     assert cap.get_encoded_frame(timeout=0.1) == (b"au", SCALED_W, SCALED_H)
 
 
+# ── Idle-source keepalive: cached IDR + keyframe gate ────────────────────────
+#
+# The stream used to die outright when the virtual display was idle: PipeWire
+# only delivers on damage, so the encoder got no input, `frames_encoded` froze,
+# and the old keepalive's keyframe request could not help (there is no frame to
+# encode). The send loop now retransmits the cached IDR instead. Only the
+# cache/accessor/gate half of that is reachable without GStreamer, which is
+# what these tests pin down; the socket write itself is not faked.
+
+def _feed_sample(cap, data, is_key):
+    """Mirror the two side effects `_on_sample` has on an H.264 capture:
+    cache the access unit when it is a keyframe, then enqueue it."""
+    if is_key:
+        with cap._lock:
+            cap._last_keyframe = data
+    return cap._sink_buffer.put(data, is_keyframe=is_key)
+
+
+def test_last_keyframe_is_none_before_anything_is_encoded():
+    """The 'nothing has ever been encoded' case the send loop must handle:
+    there is nothing to retransmit, so only a keyframe request is available."""
+    assert h264_capture(observed=False).last_keyframe() is None
+
+
+def test_last_keyframe_caches_the_most_recent_idr():
+    cap = h264_capture()
+    _feed_sample(cap, b"idr-1", True)
+    assert cap.last_keyframe() == b"idr-1"
+    _feed_sample(cap, b"idr-2", True)
+    assert cap.last_keyframe() == b"idr-2"
+
+
+def test_delta_frames_do_not_replace_the_cached_keyframe():
+    """Retransmitting a delta frame would corrupt decoder state, so a delta
+    must never end up in the cache the keepalive retransmits from."""
+    cap = h264_capture()
+    _feed_sample(cap, b"idr", True)
+    _feed_sample(cap, b"delta", False)
+    assert cap.last_keyframe() == b"idr"
+
+
+def test_last_keyframe_does_not_consume_the_queued_frame():
+    """The cache is a copy, not a peek into the queue: the send loop must
+    still receive the IDR through the normal path."""
+    cap = h264_capture()
+    _feed_sample(cap, b"idr", True)
+    assert cap.last_keyframe() == b"idr"
+    assert cap.get_encoded_frame(timeout=0.1) == (b"idr", SCALED_W, SCALED_H)
+
+
+def test_require_keyframe_gate_arms_the_queues_gate():
+    cap = h264_capture()
+    _feed_sample(cap, b"idr", True)
+    assert cap._sink_buffer.needs_keyframe is False
+    cap.require_keyframe_gate()
+    assert cap._sink_buffer.needs_keyframe is True
+
+
+def test_idle_retransmission_rejects_deltas_until_a_fresh_idr():
+    """The whole invariant, end to end at capture level: after the keepalive
+    retransmits the cached IDR the decoder sits on that IDR while the encoder's
+    reference state is elsewhere, so resumed delta frames must be rejected
+    until a fresh IDR resyncs both ends."""
+    cap = h264_capture()
+    _feed_sample(cap, b"idr", True)
+    assert cap.get_encoded_frame(timeout=0.1)[0] == b"idr"
+
+    # Source goes idle; the send loop retransmits what last_keyframe() gives it
+    # and arms the gate.
+    retransmitted = cap.last_keyframe()
+    assert retransmitted == b"idr"
+    cap.require_keyframe_gate()
+
+    # Frames resume with a delta: unsendable, dropped explicitly.
+    assert _feed_sample(cap, b"delta", False) is False
+    assert cap.get_encoded_frame(timeout=0.05) is None
+    assert cap.metrics.snapshot()["frames_dropped"] == 1
+
+    # The requested fresh IDR clears the gate and normal service resumes.
+    assert _feed_sample(cap, b"idr-2", True) is True
+    assert cap._sink_buffer.needs_keyframe is False
+    assert cap.get_encoded_frame(timeout=0.1)[0] == b"idr-2"
+    assert _feed_sample(cap, b"delta-2", False) is True
+    assert cap.get_encoded_frame(timeout=0.1)[0] == b"delta-2"
+
+
+def test_require_keyframe_gate_is_a_noop_on_the_jpeg_path():
+    """JPEG frames are independently decodable; the slot has no gate and must
+    not be asked for one."""
+    cap = jpeg_capture()
+    cap.require_keyframe_gate()
+    assert cap.get_frame() == (b"jpeg-frame", CONFIGURED_W, CONFIGURED_H)
+
+
 # ── The JPEG configuration must keep working identically ─────────────────────
 
 def test_jpeg_dimension_wait_uses_the_frame_accessor():

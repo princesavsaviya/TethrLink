@@ -72,6 +72,12 @@ MUTTER_SETUP_TIMEOUT_MS = 10_000
 # edge case, so this must hold indefinitely, not just bridge a brief stall.
 KEEPALIVE_INTERVAL_S    = 1.0
 
+# How many consecutive idle keepalives (H.264 IDR retransmissions) pass between
+# user-visible log lines. An idle extended monitor keepalives once per interval
+# forever, so per-event logging above DEBUG would be pure spam; at 1.0s
+# intervals this summarises about once a minute.
+IDLE_KEEPALIVE_LOG_EVERY = 60
+
 # ── Network constants ─────────────────────────────────────────────────────────
 PORT_SCAN_RANGE     = 10
 APPSINK_MAX_BUFFERS = 2
@@ -708,6 +714,11 @@ def log_gstreamer_preflight() -> None:
 
 
 class PipeWireCapture:
+    # Class-level default so a capture built without __init__ (the unit
+    # tests construct bare instances to exercise the real accessors without
+    # a GStreamer pipeline) still has a well-defined empty cache.
+    _last_keyframe: Optional[bytes] = None
+
     def __init__(self, node_id: int, width: int, height: int, codec: int,
                  fps: int, bitrate: int, h264_width: int, quality: int = 90,
                  flip_orientation: bool = False,
@@ -738,6 +749,10 @@ class PipeWireCapture:
         # handshake can learn the real (possibly scaled) frame dimensions
         # without popping anything off the encoded-frame queue.
         self._first_sample = threading.Event()
+        # Most recent IDR access unit, kept so the send loop can retransmit
+        # it as an idle keepalive when the source stops producing frames
+        # entirely. See last_keyframe().
+        self._last_keyframe: Optional[bytes] = None
         self._jpegenc  = None
         self._flip     = None
         self._on_error = on_error  # called when pipeline errors — lets ServerCore abort the stream
@@ -827,17 +842,57 @@ class PipeWireCapture:
                  "H.264" if codec == CODEC_H264 else "JPEG")
         threading.Thread(target=self._loop.run, daemon=True).start()
 
-    def request_keyframe(self) -> None:
+    def last_keyframe(self) -> Optional[bytes]:
+        """The most recent IDR access unit seen by the appsink, or None.
+
+        Exists for the send loop's idle keepalive: when PipeWire stops
+        delivering frames (a virtual display only generates damage when
+        something repaints on it, so an idle one produces nothing at all),
+        the encoder has no input and therefore emits nothing — no keyframe
+        request can conjure a frame that does not exist. Retransmitting
+        this cached IDR is what keeps the client's read timeout satisfied.
+
+        Safe by H.264 semantics in a way a delta frame is not: an
+        instantaneous decoder refresh resets the decoder's reference state
+        by definition, so re-feeding one cannot corrupt it, and it paints
+        the same picture the client is already showing.
+
+        Guarded by the same lock `_on_sample` writes under, so the caller
+        always sees a whole access unit.
+        """
+        with self._lock:
+            return self._last_keyframe
+
+    def require_keyframe_gate(self) -> None:
+        """Reject delta frames until a fresh IDR arrives.
+
+        Delegates to the frame queue's existing post-overflow gate. The
+        send loop calls this after retransmitting a cached IDR: the decoder
+        is then at "just decoded that IDR" while the encoder's reference
+        state is wherever it left off, so the next delta frame it emits
+        would decode against the wrong picture. No-op on the JPEG path,
+        whose frames are independently decodable and need no gating.
+        """
+        if self.is_inter_frame:
+            self._sink_buffer.require_keyframe()
+
+    def request_keyframe(self, reason: str = "keepalive resync") -> None:
         """Public entry point for forcing an IDR.
 
         Thin wrapper around `_request_keyframe()` so callers outside this
         class (the send loop's idle keepalive) don't reach into a private
         method. Same operation as the overflow handler uses; there is only
         ever one legitimate way to ask the encoder for a fresh IDR.
-        """
-        self._request_keyframe()
 
-    def _request_keyframe(self) -> None:
+        Logs at DEBUG rather than WARNING: an idle stream calls this once
+        per keepalive interval by design, and a warning per second would
+        drown the log for what is the normal state of an unattended
+        extended monitor.
+        """
+        self._request_keyframe(reason=reason, log_level=logging.DEBUG)
+
+    def _request_keyframe(self, reason: str = "frame queue overflow",
+                          log_level: int = logging.WARNING) -> None:
         """Force an IDR after a queue overflow.
 
         The backlog was discarded, so the decoder's reference chain is broken;
@@ -870,12 +925,13 @@ class PipeWireCapture:
             accepted = pad.push_event(event)
             if accepted:
                 self.metrics.incr("keyframe_requests")
-                log.warning("Frame queue overflow — forced keyframe resync")
+                log.log(log_level, "Forced keyframe resync (%s)", reason)
             else:
-                log.warning(
-                    "Frame queue overflow — keyframe request was rejected "
-                    "by the pipeline; decoder may stay corrupted until the "
-                    "next scheduled keyframe"
+                log.log(
+                    log_level,
+                    "Keyframe request rejected by the pipeline (%s); decoder "
+                    "may stay corrupted until the next scheduled keyframe",
+                    reason,
                 )
         except Exception as e:
             log.debug("Force-keyframe request failed: %s", e)
@@ -898,6 +954,13 @@ class PipeWireCapture:
                         self._fh = caps.get_value("height")
                 except Exception:
                     pass
+                if is_key:
+                    # h264parse runs with config-interval=-1, so every IDR
+                    # access unit carries its own SPS/PPS — which is what
+                    # makes a cached copy independently decodable and safe
+                    # to retransmit later.
+                    with self._lock:
+                        self._last_keyframe = data
                 self._sink_buffer.put(data, is_keyframe=is_key)
             else:
                 self._sink_buffer.put(data)
@@ -1621,7 +1684,9 @@ class ServerCore:
             # what keeps the JPEG keepalive from ever resending nothing.
             last_sent_monotonic = time.monotonic()
             last_sent_payload: Optional[bytes] = None
-            keyframe_requested_since_last_frame = False
+            # Counts idle IDR retransmissions on the H.264 path, purely so the
+            # log can carry an occasional summary instead of a line per second.
+            idle_keepalives = 0
 
             while not self._shutdown.is_set() and not session_stop.is_set():
                 if capture.is_inter_frame:
@@ -1638,17 +1703,65 @@ class ServerCore:
                         capture.metrics.incr("frames_sent")
                         frame_count += 1
                         last_sent_monotonic = time.monotonic()
-                        keyframe_requested_since_last_frame = False
+                        idle_keepalives = 0
                     elif time.monotonic() - last_sent_monotonic >= KEEPALIVE_INTERVAL_S:
-                        # Never retransmit a previously-sent access unit here —
-                        # re-feeding a delta frame corrupts decoder state.
-                        # Instead ask the encoder for a fresh, self-contained
-                        # IDR; it will flow through the normal `if r:` branch
-                        # above once it arrives. Guarded so a still-silent
-                        # encoder doesn't get spammed every iteration.
-                        if not keyframe_requested_since_last_frame:
-                            capture.request_keyframe()
-                            keyframe_requested_since_last_frame = True
+                        # PipeWire delivers frames only on damage. A virtual
+                        # display with no windows on it never repaints, so
+                        # pipewiresrc emits nothing, videorate has no input to
+                        # repeat (it duplicates existing frames, it cannot
+                        # synthesise them), and the encoder produces nothing at
+                        # all. Asking for a keyframe here is useless on its
+                        # own — you cannot encode a frame that does not exist,
+                        # which is why the old request-only keepalive let the
+                        # stream die and the client reconnect-storm.
+                        #
+                        # Retransmit the last cached IDR instead. That is safe
+                        # by H.264 semantics in a way retransmitting a delta
+                        # frame is not: an instantaneous decoder refresh resets
+                        # the decoder's reference state by definition, and the
+                        # picture is the one already on screen, so it is a
+                        # visual no-op that satisfies the client's read timeout.
+                        cached = capture.last_keyframe()
+                        if cached is not None:
+                            conn.sendall(struct.pack(">I", len(cached)) + cached)
+                            capture.metrics.incr("frames_sent")
+                            frame_count += 1
+                            last_sent_monotonic = time.monotonic()
+                            idle_keepalives += 1
+                            # Correctness, not belt-and-braces: the decoder now
+                            # sits at "just decoded that IDR", while the
+                            # encoder's own reference state is wherever it
+                            # actually left off — so the first delta frame to
+                            # arrive when the display wakes up would reference a
+                            # picture the decoder no longer holds. Arm the same
+                            # gate the overflow path uses so such frames are
+                            # rejected, and ask for a fresh IDR so the gate
+                            # clears promptly once frames resume.
+                            capture.require_keyframe_gate()
+                            capture.request_keyframe(reason="idle keepalive")
+                            log.debug(
+                                "Idle source — retransmitted cached IDR "
+                                "(%d bytes, %d consecutive)",
+                                len(cached), idle_keepalives,
+                            )
+                            if idle_keepalives % IDLE_KEEPALIVE_LOG_EVERY == 0:
+                                self._log(
+                                    f"Source idle — holding the link with "
+                                    f"retransmitted keyframes "
+                                    f"({idle_keepalives} so far)"
+                                )
+                        else:
+                            # Nothing has ever been encoded on this session, so
+                            # there is nothing to retransmit; requesting a
+                            # keyframe is the only available action. Retried
+                            # every interval — the old once-only guard is
+                            # precisely what made the stall permanent.
+                            # No timer reset: nothing was sent, so
+                            # `last_sent_monotonic` must keep meaning what it
+                            # says. The blocking get_encoded_frame() above
+                            # already paces this branch to roughly one attempt
+                            # per KEEPALIVE_INTERVAL_S.
+                            capture.request_keyframe(reason="no frame yet")
                 else:
                     start = time.monotonic()
                     r = capture.get_frame()
