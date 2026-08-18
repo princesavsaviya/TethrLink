@@ -911,9 +911,36 @@ class PipeWireCapture:
                 f"! video/x-raw,width={width},height={height},max-framerate={fps}/1 "
                 # Dropping RAW frames is safe — it only lowers framerate.
                 f"! queue leaky=downstream max-size-buffers={H264_LEAKY_QUEUE_MAX_BUFFERS} max-size-bytes=0 max-size-time=0 "
-                f"! videorate "
+                # Mutter's ScreenCast capture is strictly damage-driven: on a
+                # static screen (no mouse movement, no video, no pixel
+                # changes at all) it stops producing frames entirely —
+                # measured in isolation with tools/diagnose_capture_stall.py,
+                # which saw 21 frames on an idle virtual display and then
+                # zero for the rest of the run. No caps request fixes this:
+                # asking pipewiresrc for a FIXED framerate={fps}/1 instead of
+                # max-framerate={fps}/1 was tried and still produced zero
+                # frames once the display went idle, so the constant rate
+                # has to be manufactured downstream, not requested upstream.
+                # compositor aggregates its input on its OWN clock and keeps
+                # emitting even when that input goes quiet, so it is what
+                # actually supplies the missing constant rate; the caps
+                # filter right after it is what makes that rate concrete
+                # rather than "whatever came in". latency=0 was measured to
+                # hold a steady {fps}fps with no added latency, which matters
+                # because the buffering on this path was deliberately shrunk
+                # from ~265ms to ~133ms to fix pointer lag — any latency
+                # given back here would undo that fix. videorate is
+                # deliberately NOT used here: with the compositor already
+                # fixing the output rate, a second element trying to
+                # normalise it too would be redundant and confusing. Remove
+                # this element only if Mutter's ScreenCast stops being
+                # damage-driven — until then the stream is 1fps-when-idle
+                # and cold-on-resume without it, papered over only by the
+                # idle-IDR keepalive below (see last_keyframe()).
+                f"! compositor name=c background=black latency=0 "
+                f"! video/x-raw,framerate={fps}/1 "
                 f"! videoconvert "
-                f"! video/x-raw,format=NV12,framerate={fps}/1,colorimetry=bt709 "
+                f"! video/x-raw,format=NV12,colorimetry=bt709 "
                 f"! {encoder_fragment} "
                 f"! h264parse config-interval=-1 "
                 f"! video/x-h264,stream-format=byte-stream,alignment=au,profile=high "
