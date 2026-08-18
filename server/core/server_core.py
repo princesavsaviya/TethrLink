@@ -1648,16 +1648,24 @@ class ServerCore:
             store = ProfileStore()
             store.load()
             known = store.get_device(device_id)
+            # Treat a wrongly-typed count as absent rather than adding to it.
+            # Arithmetic on a string or null would raise, and because the raise
+            # would land before set_device(), the bad record would never be
+            # overwritten — the failure would repeat on every connection
+            # instead of healing itself on the next one.
+            previous = (known or {}).get("connections")
             store.set_device(device_id, {
                 "name": device_name,
                 "width": screen_w,
                 "height": screen_h,
                 "last_capture_width": width,
                 "last_capture_height": height,
-                "connections": (known or {}).get("connections", 0) + 1,
+                "connections": (previous if isinstance(previous, int) else 0) + 1,
             })
-            store.save()
-            if known is None:
+            # Only claim it was saved if it actually was: save() reports
+            # failure rather than raising, so on a read-only cache directory
+            # this would otherwise announce a first connection every time.
+            if store.save() and known is None:
                 self._log(f"First connection from {device_name} — profile saved")
         except Exception as e:
             # Recording a profile is a convenience, never a precondition for
