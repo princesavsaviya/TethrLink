@@ -95,7 +95,15 @@ FALLBACK_HEIGHT = 1080
 
 @dataclass
 class ServerConfig:
-    fps: int = 45
+    # 30, not 45. At the device's native 2960×1848, 45 fps demands roughly
+    # 246 Mpx/s of decode, which sits right on H.264 Level 5.1's 251 Mpx/s
+    # ceiling — no headroom at all on the tablet's decoder. 30 fps drops that
+    # to about 164 Mpx/s. It also lowers the derived bitrate from ~24,600 to
+    # ~16,400 kbps, which matters because the USB link enumerates at USB 2.0
+    # High Speed (480 Mbit/s theoretical, ~200–300 Mbit/s realistic) —
+    # verified on the live device. `gop_length` is derived from the live fps
+    # at session start, so the keyframe interval follows automatically.
+    fps: int = 30
     quality: int = 90
     codec: int = CODEC_JPEG
     bitrate: int = 0        # 0 = derive automatically from resolution and frame rate
