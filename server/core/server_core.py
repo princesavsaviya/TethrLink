@@ -34,6 +34,16 @@ from server.core.preflight import (
 )
 from server.core.frame_queue import EncodedFrameQueue, LatestFrameSlot
 from server.core.metrics import StreamMetrics
+from server.core.encoder import (
+    CANDIDATES,
+    RC_NICKS,
+    RC_PROPERTY,
+    EncoderConfig,
+    EncoderSpec,
+    RateControl,
+    build_spec,
+    default_bitrate_kbps,
+)
 
 # Mandatory global D-Bus initialization for GLib loop integration.
 # Must be called once before any D-Bus objects are created.
@@ -450,6 +460,123 @@ class X11VirtualDisplay:
 
 
 # ── GStreamer capture ─────────────────────────────────────────────────────────
+
+_ENCODER_CACHE = {}
+
+
+def probe_rate_controls(element: str) -> set:
+    """Report which rate-control modes this element accepts ON THIS MACHINE.
+
+    Determined by actually setting the property and seeing what sticks, which
+    is more reliable than introspecting the enum class through PyGObject. The
+    answer is genuinely hardware-dependent: the enum is populated from the
+    render node, so `vah264lpenc` accepts only `cqp` on Intel Comet Lake
+    while `vaapih264enc` accepts all three.
+
+    Elements with no rate-control property at all (v4l2h264enc, openh264enc)
+    are reported as supporting everything, because their adapters express
+    rate control through other properties entirely.
+    """
+    # Gst.ElementFactory.find() silently returns None for every element,
+    # hardware included, until Gst.init() has run — and this is the first
+    # Gst call standalone callers (this task's own verification script,
+    # select_encoder() before any ServerCore exists) make. Idempotent, like
+    # every other Gst.init(None) call in this file.
+    Gst.init(None)
+    factory = Gst.ElementFactory.find(element)
+    if factory is None:
+        return set()
+    try:
+        el = factory.create(None)
+    except Exception:
+        return set()
+    if el is None:
+        return set()
+
+    prop_name = RC_PROPERTY.get(element)
+    if prop_name is None:
+        return {RateControl.CBR, RateControl.VBR, RateControl.CQP}
+
+    try:
+        if el.find_property(prop_name) is None:
+            return {RateControl.CBR, RateControl.VBR, RateControl.CQP}
+    except Exception:
+        return {RateControl.CBR, RateControl.VBR, RateControl.CQP}
+
+    modes = set()
+    for mode in (RateControl.CBR, RateControl.VBR, RateControl.CQP):
+        nick = RC_NICKS.get(element, {}).get(mode)
+        if nick is None:
+            continue
+        try:
+            el.set_property(prop_name, nick)
+            modes.add(mode)
+        except Exception:
+            pass
+    return modes
+
+
+def _encoder_runs(spec: EncoderSpec) -> bool:
+    """Actually encode a frame. Presence and properties are not enough.
+
+    vaapih264enc advertises cbr and still fails with an internal data stream
+    error at runtime on this hardware, so nothing short of running it counts
+    as verification.
+    """
+    desc = (
+        f"videotestsrc num-buffers=2 ! "
+        f"video/x-raw,format=NV12,width=320,height=240,framerate=30/1 ! "
+        f"{spec.to_pipeline_fragment()} ! fakesink sync=false"
+    )
+    pipeline = None
+    try:
+        pipeline = Gst.parse_launch(desc)
+        if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+            return False
+        msg = pipeline.get_bus().timed_pop_filtered(
+            5 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR
+        )
+        return msg is not None and msg.type == Gst.MessageType.EOS
+    except Exception as e:
+        log.debug("Encoder %s failed verification: %s", spec.element, e)
+        return False
+    finally:
+        if pipeline is not None:
+            pipeline.set_state(Gst.State.NULL)
+
+
+def select_encoder(config: EncoderConfig):
+    """Pick the best encoder that actually works, hardware first.
+
+    Result is cached: probing instantiates pipelines, which is too expensive
+    to repeat per client connection.
+    """
+    key = (config.rate_control, config.gop_length, config.bitrate_kbps,
+           config.low_latency)
+    if key in _ENCODER_CACHE:
+        return _ENCODER_CACHE[key]
+
+    chosen = None
+    for element in CANDIDATES:
+        spec = build_spec(element, config, probe_rate_controls(element))
+        if spec is None:
+            continue
+        if not _encoder_runs(spec):
+            log.info("Encoder %s present but not usable — skipping", element)
+            continue
+        chosen = spec
+        break
+
+    if chosen is None:
+        log.error("No usable H.264 encoder found")
+    else:
+        log.info("Encoder selected: %s (%s, rate-control=%s)",
+                 chosen.element,
+                 "hardware" if chosen.is_hardware else "software",
+                 chosen.rate_control)
+    _ENCODER_CACHE[key] = chosen
+    return chosen
+
 
 def log_gstreamer_preflight() -> None:
     """Log the GStreamer the running process actually loaded."""
