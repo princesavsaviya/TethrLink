@@ -105,8 +105,49 @@ RC_NICKS = {
 }
 
 
+# The quantizer used whenever an encoder runs in CQP mode. CQP has no bitrate
+# target by construction, so without an explicit QP the encoder runs at
+# whatever its own default is — which is the unbounded-quality behaviour that
+# replacing the old `quantizer=1` was meant to eliminate. 21 is a visually
+# transparent, sanely-sized default for desktop content.
+CQP_QUANTIZER = "21"
+
+# Which property carries that quantizer. Like RC_PROPERTY, these genuinely
+# differ per element and a single guessed name would silently do nothing on
+# most of them. Verified on this machine by set_property against real
+# elements: `x264enc.quantizer`, `nvh264enc.qp-const`, `vaapih264enc.init-qp`,
+# `vah264lpenc.qpi`/`.qpp` all accept 21 with rate-control set to their CQP
+# nickname.
+#
+# UNVERIFIED: `qsvh264enc` is absent on this machine, so `qp-i`/`qp-p` are
+# taken from the GStreamer qsv plugin's documented property names and have not
+# been confirmed against a real element. If they are wrong the element will
+# fail to parse, and `_encoder_runs()` in server_core.py — which instantiates
+# and actually runs each candidate before selecting it — rejects it rather
+# than shipping a broken pipeline. `vah264enc` is also absent here, but it
+# shares the `va` plugin (and this adapter) with the verified `vah264lpenc`.
+#
+# Tuples, not single names: the `va` and `qsv` plugins carry a separate
+# quantizer per frame type. B-frames are explicitly disabled by every adapter,
+# so only the I and P quantizers are set.
+CQP_PROPERTY = {
+    "x264enc":      ("quantizer",),
+    "nvh264enc":    ("qp-const",),
+    "vaapih264enc": ("init-qp",),
+    "vah264enc":    ("qpi", "qpp"),
+    "vah264lpenc":  ("qpi", "qpp"),
+    "qsvh264enc":   ("qp-i", "qp-p"),
+}
+
+
 def _rc_nick(element: str, mode: str) -> str:
     return RC_NICKS.get(element, {}).get(mode, mode)
+
+
+def _apply_cqp(props: Dict[str, str], element: str) -> None:
+    """Set this element's constant-quantizer properties in place."""
+    for name in CQP_PROPERTY.get(element, ()):
+        props[name] = CQP_QUANTIZER
 
 
 def _x264(cfg: EncoderConfig) -> Dict[str, str]:
@@ -121,7 +162,7 @@ def _x264(cfg: EncoderConfig) -> Dict[str, str]:
         props["tune"] = "zerolatency"
     if cfg.rate_control == RateControl.CQP:
         props["pass"] = "qual"
-        props["quantizer"] = "21"
+        _apply_cqp(props, "x264enc")
     else:
         props["pass"] = "cbr"
         props["bitrate"] = str(cfg.bitrate_kbps)
@@ -137,7 +178,7 @@ def _nvenc(cfg: EncoderConfig) -> Dict[str, str]:
         props["zerolatency"] = "true"
     props["rc-mode"] = _rc_nick("nvh264enc", cfg.rate_control)
     if cfg.rate_control == RateControl.CQP:
-        props["qp-const"] = "21"
+        _apply_cqp(props, "nvh264enc")
     else:
         props["bitrate"] = str(cfg.bitrate_kbps)
     return props
@@ -146,7 +187,13 @@ def _nvenc(cfg: EncoderConfig) -> Dict[str, str]:
 def _vaapi(cfg: EncoderConfig) -> Dict[str, str]:
     props = {"keyframe-period": str(cfg.gop_length), "max-bframes": "0"}
     props["rate-control"] = _rc_nick("vaapih264enc", cfg.rate_control)
-    if cfg.rate_control != RateControl.CQP:
+    if cfg.rate_control == RateControl.CQP:
+        # CQP has no bitrate target, so without this the encoder runs at its
+        # own default QP — no quality target and no size ceiling. `_x264` and
+        # `_nvenc` always set one; this used to not, which is the whole reason
+        # the degrade-to-CQP path was producing unbounded output.
+        _apply_cqp(props, "vaapih264enc")
+    else:
         props["bitrate"] = str(cfg.bitrate_kbps)
     return props
 
@@ -155,7 +202,12 @@ def _va(cfg: EncoderConfig) -> Dict[str, str]:
     # The modern `va` plugin spells it `b-frames` and `key-int-max`.
     props = {"key-int-max": str(cfg.gop_length), "b-frames": "0"}
     props["rate-control"] = _rc_nick("vah264lpenc", cfg.rate_control)
-    if cfg.rate_control != RateControl.CQP:
+    if cfg.rate_control == RateControl.CQP:
+        # This is the documented `vah264lpenc`-on-Intel case: it offers only
+        # cqp, so every Intel user reaching this adapter lands here. Setting
+        # the quantizer explicitly is what gives them a quality target at all.
+        _apply_cqp(props, "vah264lpenc")
+    else:
         props["bitrate"] = str(cfg.bitrate_kbps)
     return props
 
@@ -173,7 +225,13 @@ def _qsv(cfg: EncoderConfig) -> Dict[str, str]:
     # so CQP mode emitted no rate-control property at all and silently
     # inherited whatever qsvh264enc defaults to.
     props["rate-control"] = _rc_nick("qsvh264enc", cfg.rate_control)
-    if cfg.rate_control != RateControl.CQP:
+    if cfg.rate_control == RateControl.CQP:
+        # Property names UNVERIFIED — qsvh264enc is absent on this machine, so
+        # `qp-i`/`qp-p` come from the plugin's documentation, not from
+        # introspection. See CQP_PROPERTY's comment: `_encoder_runs()` is the
+        # safety net if they are wrong.
+        _apply_cqp(props, "qsvh264enc")
+    else:
         props["bitrate"] = str(cfg.bitrate_kbps)
     return props
 

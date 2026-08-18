@@ -241,3 +241,87 @@ def test_v4l2_cqp_mode_yields_no_controls():
     )
     spec = build_spec("v4l2h264enc", cqp_cfg, {RateControl.CQP})
     assert spec.props == {}
+
+
+# ── CQP quality target ───────────────────────────────────────────────────────
+# CQP has no bitrate target by construction. An encoder given `rate-control=cqp`
+# and no quantizer runs at its own default QP — no quality target and no size
+# ceiling, which is the unbounded-quality behaviour that replacing the old
+# `quantizer=1` was meant to eliminate. Every adapter that can express a
+# quantizer must set one.
+
+from server.core.encoder import CQP_PROPERTY, CQP_QUANTIZER
+
+
+def _cqp_config():
+    return EncoderConfig(
+        bitrate_kbps=25000, gop_length=45, rate_control=RateControl.CQP
+    )
+
+
+def test_vaapi_cqp_sets_its_own_quantizer_property():
+    """vaapih264enc carries the constant quantizer on `init-qp` — verified by
+    set_property against the real element on this machine."""
+    spec = build_spec("vaapih264enc", _cqp_config(), {RateControl.CQP})
+    assert spec.props["init-qp"] == CQP_QUANTIZER
+    assert "bitrate" not in spec.props
+
+
+def test_va_cqp_sets_its_own_quantizer_properties():
+    """The `va` plugin spells them `qpi`/`qpp` — verified by set_property
+    against the real vah264lpenc on this machine. This is the documented
+    vah264lpenc-on-Intel case, where cqp is the ONLY mode offered."""
+    for element in ("vah264enc", "vah264lpenc"):
+        spec = build_spec(element, _cqp_config(), {RateControl.CQP})
+        assert spec.props["qpi"] == CQP_QUANTIZER, element
+        assert spec.props["qpp"] == CQP_QUANTIZER, element
+        assert spec.props["rate-control"] == "cqp", element
+        assert "bitrate" not in spec.props, element
+
+
+def test_qsv_cqp_sets_its_own_quantizer_properties():
+    """qsvh264enc is absent on this machine, so `qp-i`/`qp-p` come from the
+    plugin's documentation, not introspection. _encoder_runs() rejects the
+    encoder at runtime if they are wrong."""
+    spec = build_spec("qsvh264enc", _cqp_config(), {RateControl.CQP})
+    assert spec.props["qp-i"] == CQP_QUANTIZER
+    assert spec.props["qp-p"] == CQP_QUANTIZER
+    assert "bitrate" not in spec.props
+
+
+def test_degrading_to_cqp_still_yields_a_quality_target():
+    """The regression: CBR unavailable → degrade to CQP → no QP set at all.
+
+    An Intel user on vah264lpenc reaches this path on every single connection.
+    """
+    spec = build_spec("vah264lpenc", _cbr_config(), {RateControl.CQP})
+    assert spec.rate_control == RateControl.CQP
+    assert spec.props["qpi"] == CQP_QUANTIZER
+    assert spec.props["qpp"] == CQP_QUANTIZER
+
+
+def test_all_cqp_capable_adapters_agree_on_the_same_quantizer():
+    """x264 and nvenc already used 21; the rest must not drift from it."""
+    for element, names in CQP_PROPERTY.items():
+        spec = build_spec(element, _cqp_config(), {RateControl.CQP})
+        assert spec is not None, element
+        for name in names:
+            assert spec.props[name] == CQP_QUANTIZER, f"{element}.{name}"
+
+
+def test_cqp_property_names_are_not_shared_across_vendors():
+    """Guessing one name across all encoders silently sets nothing on most of
+    them — the same trap RC_PROPERTY exists to avoid."""
+    assert CQP_PROPERTY["x264enc"] == ("quantizer",)
+    assert CQP_PROPERTY["nvh264enc"] == ("qp-const",)
+    assert CQP_PROPERTY["vaapih264enc"] == ("init-qp",)
+    assert CQP_PROPERTY["vah264lpenc"] == ("qpi", "qpp")
+    assert CQP_PROPERTY["qsvh264enc"] == ("qp-i", "qp-p")
+
+
+def test_cbr_mode_sets_no_quantizer_anywhere():
+    """A quantizer alongside a bitrate target is contradictory."""
+    for element, names in CQP_PROPERTY.items():
+        spec = build_spec(element, _cbr_config(), {RateControl.CBR})
+        for name in names:
+            assert name not in spec.props, f"{element}.{name} set in CBR mode"

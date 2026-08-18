@@ -37,6 +37,7 @@ from server.core.geometry import is_plausible_size, resolve_capture_size
 from server.core.metrics import StreamMetrics
 from server.core.encoder import (
     CANDIDATES,
+    CQP_PROPERTY,
     RC_NICKS,
     RC_PROPERTY,
     EncoderConfig,
@@ -640,6 +641,43 @@ def select_encoder(config: EncoderConfig, width: int, height: int):
     if chosen is not None:
         _ENCODER_CACHE[key] = chosen
     return chosen
+
+
+def describe_h264_encoding(spec, bitrate_kbps: int, bitrate_source: str) -> str:
+    """Describe what the chosen encoder will actually do.
+
+    Deliberately reports the selected spec rather than the request. A bitrate
+    was asked for, but CBR may not have been available: `build_spec` degrades
+    to CQP rather than refusing the encoder, and CQP has no bitrate target at
+    all. Reporting the requested number in that case overstates what happened,
+    which is a defect in its own right.
+    """
+    if spec is None:
+        # PipeWireCapture falls back to its hardcoded software encoder; keep
+        # this message in step with that fragment.
+        return (
+            f"H.264: no usable encoder found — falling back to built-in "
+            f"x264enc (CBR 25000 kbps). The {bitrate_kbps} kbps target "
+            f"({bitrate_source}) is NOT used."
+        )
+
+    kind = "hardware" if spec.is_hardware else "software"
+    if spec.rate_control == RateControl.CQP:
+        quantizers = ", ".join(
+            f"{name}={spec.props[name]}"
+            for name in CQP_PROPERTY.get(spec.element, ())
+            if name in spec.props
+        ) or "encoder default"
+        return (
+            f"H.264: {spec.element} ({kind}) — rate-control=cqp, "
+            f"constant quantizer {quantizers}. CBR was unavailable on this "
+            f"hardware, so the {bitrate_kbps} kbps target ({bitrate_source}) "
+            f"is NOT used."
+        )
+    return (
+        f"H.264: {spec.element} ({kind}) — rate-control={spec.rate_control}, "
+        f"{bitrate_kbps} kbps ({bitrate_source})"
+    )
 
 
 def log_gstreamer_preflight() -> None:
@@ -1466,7 +1504,6 @@ class ServerCore:
                         "explicitly configured" if self._config.bitrate > 0
                         else "derived from resolution/fps"
                     )
-                    self._log(f"H.264 bitrate: {bitrate_kbps} kbps ({bitrate_source})")
                     enc_spec = select_encoder(
                         EncoderConfig(
                             bitrate_kbps=bitrate_kbps,
@@ -1475,6 +1512,15 @@ class ServerCore:
                         ),
                         width, height,
                     )
+                    # Logged AFTER selection, and describing the encoder that
+                    # was actually chosen. This used to log the requested
+                    # bitrate before select_encoder() ran, so it reported a
+                    # number the chosen encoder might never receive — actively
+                    # misleading on any encoder that degraded to CQP (which has
+                    # no bitrate target at all) or when no encoder was usable
+                    # and the hardcoded x264 fallback took over.
+                    self._log(describe_h264_encoding(
+                        enc_spec, bitrate_kbps, bitrate_source))
 
                 capture = PipeWireCapture(
                     node_id, width, height, codec,
