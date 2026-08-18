@@ -1637,6 +1637,33 @@ class ServerCore:
         self._log(f"Starting — {width}×{height} @ {self._live_fps} FPS "
                   f"({'H.264' if codec == CODEC_H264 else 'JPEG'})")
 
+        # ── Remember this device ────────────────────────────────────────────
+        # Keyed by the 16-byte device id the handshake already carries — no
+        # protocol change. Recorded here, after resolution is resolved and
+        # logged, so the stored record reflects what was actually used rather
+        # than what was requested. This is a convenience, never a
+        # precondition for streaming: no failure here may stop a client from
+        # connecting.
+        try:
+            store = ProfileStore()
+            store.load()
+            known = store.get_device(device_id)
+            store.set_device(device_id, {
+                "name": device_name,
+                "width": screen_w,
+                "height": screen_h,
+                "last_capture_width": width,
+                "last_capture_height": height,
+                "connections": (known or {}).get("connections", 0) + 1,
+            })
+            store.save()
+            if known is None:
+                self._log(f"First connection from {device_name} — profile saved")
+        except Exception as e:
+            # Recording a profile is a convenience, never a precondition for
+            # streaming.
+            log.debug("Could not record device profile: %s", e)
+
         # ── Set up capture (Wayland: Mutter virtual display, X11: mss) ─────────
         display = None
         capture = None
