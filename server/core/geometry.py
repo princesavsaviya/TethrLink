@@ -1,8 +1,10 @@
 """Capture geometry resolution.
 
-The virtual display should be the shape of the Android device, so that
-nothing in the path ever rescales: capture, encode, decode and render all
-agree, which is both the sharpest and the cheapest arrangement.
+The virtual display is sized from both ends of the connection: its height
+matches the host monitor, so the two screens' shared edge is fully
+traversable in GNOME's display arrangement, while its aspect ratio matches
+the Android device, so nothing is stretched on the device's panel. See
+`resolve_capture_size` for the full rationale and precedence rules.
 
 No `gi` import — the alignment, orientation and precedence rules are worth
 testing on their own.
@@ -93,23 +95,79 @@ def resolve_capture_size(
 ) -> Tuple[int, int]:
     """Decide what size to capture at.
 
-    Precedence: an explicit user override, else the connected device's own
-    dimensions, else the PC's primary monitor. Device dimensions winning over
-    the monitor is the entire point — previously the device's reported size
-    was stored and then ignored, so a 2960x1848 tablet received a
-    PC-shaped 1920x1080 desktop scaled down to 1280 wide and stretched back
-    up on the client.
+    Precedence:
+
+    1. An explicit user override (`config_w`/`config_h`) always wins.
+    2. When both the device and the monitor are known, an "edge-aligned"
+       size is derived from the two of them (see below) rather than simply
+       matching the device.
+    3. Device known, monitor not: use the device's own dimensions.
+    4. Neither known: fall back to the PC's primary monitor.
+
+    Matching the device exactly (the old behaviour) turned out to cause
+    three problems that hardware testing surfaced:
+
+    - Decode cost: a 2960x1848 stream at 30 fps asks for ~164 Mpx/s, close
+      to the practical ceiling for a single H.264 decode on the device.
+    - Broken edge traversal: GNOME only lets the mouse cross between two
+      monitors where their edges vertically overlap. A virtual display much
+      taller than the laptop panel beside it leaves the excess height
+      untraversable — the cursor hits an invisible wall.
+    - Unreadable UI: a desktop rendered 1:1 at a tablet's native pixel
+      density is physically tiny on the panel; fixing that properly needs a
+      Mutter scale factor, which is out of scope here.
+
+    Matching the monitor's height fixes all three, but the host is
+    typically 16:9 while the device is often 16:10 (or another ratio), and
+    the H.264 client path renders into a full-screen Surface with no aspect
+    correction — so a monitor-shaped stream stretches visibly on the
+    device. The fix is to take the height from the monitor (so the shared
+    screen edge is fully traversable) but the *aspect ratio* from the
+    device (so nothing is stretched on the panel, and the upscale from
+    captured pixels to physical pixels is uniform in both axes rather than
+    stretched more in one than the other):
+
+        target_height = min(monitor_h, device_h)
+        target_width  = round(target_height * (device_w / device_h))
+
+    For example, a 1920x1080 monitor with a 2960x1848 device yields
+    1730x1080: the host's height, widened to the device's 1.60:1 aspect.
+
+    `min(...)` also means we never ask for more pixels than the device can
+    actually show — a 4K-tall monitor paired with a 1848-tall device still
+    tops out at 1848, since sending more than the panel can display would
+    be pure waste.
+
+    The aspect ratio must be computed from the device dimensions *after*
+    landscape normalisation, not the raw report: the Android client always
+    streams in landscape (see `normalise_orientation`), so a device that
+    happened to report portrait at connect time must have its aspect ratio
+    read from the landscape shape it will actually stream, or the derived
+    size comes out inverted and the stretch this change removes comes back
+    worse than before.
 
     The device's report is only trusted if it is plausible at all; an
-    implausible one falls back to the monitor rather than building a virtual
-    monitor out of nonsense. The result is then normalised to landscape,
-    because that is the only shape the client ever renders into — see
-    `normalise_orientation`.
+    implausible one falls back to the monitor rather than building a
+    virtual monitor out of nonsense. Whatever is chosen is normalised to
+    landscape at the end too — a no-op for the edge-aligned and device-only
+    paths, which already normalised going in, but still needed for the
+    monitor-only fallback and to leave an explicit `orientation="portrait"`
+    alone.
     """
     if config_w > 0 and config_h > 0:
         width, height = config_w, config_h
     elif is_plausible_size(device_w, device_h):
-        width, height = device_w, device_h
+        # Normalise before deriving anything from the aspect ratio — see the
+        # docstring's note on why this ordering matters.
+        norm_device_w, norm_device_h = normalise_orientation(
+            device_w, device_h, orientation
+        )
+        if is_plausible_size(monitor_w, monitor_h):
+            target_height = min(monitor_h, norm_device_h)
+            target_width = round(target_height * (norm_device_w / norm_device_h))
+            width, height = target_width, target_height
+        else:
+            width, height = norm_device_w, norm_device_h
     else:
         # Zero is the ordinary "this client reported nothing" case and is not
         # worth a warning; anything else is a real report we are refusing.

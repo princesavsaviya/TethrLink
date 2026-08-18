@@ -20,12 +20,52 @@ def test_alignment_to_sixteen_rounds_up():
     assert align_for_encoder(2960, 1848, 16) == (2960, 1856)
 
 
-def test_device_dimensions_win_over_the_monitor():
-    """The whole point: match the tablet, not the PC's screen."""
+def test_edge_aligned_size_uses_monitor_height_and_device_aspect():
+    """The real case this change is for: 1920x1080 monitor, 2960x1848 tablet.
+
+    Height comes from the monitor (so the shared GNOME edge is fully
+    traversable); width is derived from the device's aspect ratio (so
+    nothing is stretched on the tablet's panel).
+    """
     assert resolve_capture_size(
         device_w=2960, device_h=1848,
         config_w=0, config_h=0,
         monitor_w=1920, monitor_h=1080,
+    ) == (1730, 1080)
+
+
+def test_edge_aligned_size_preserves_the_device_aspect_ratio():
+    w, h = resolve_capture_size(
+        device_w=2960, device_h=1848,
+        config_w=0, config_h=0,
+        monitor_w=1920, monitor_h=1080,
+    )
+    assert abs((w / h) - (2960 / 1848)) < 0.01
+
+
+def test_edge_aligned_size_never_exceeds_the_devices_own_height():
+    """A 4K-tall monitor still tops out at what the tablet can show."""
+    assert resolve_capture_size(
+        device_w=2960, device_h=1848,
+        config_w=0, config_h=0,
+        monitor_w=3840, monitor_h=2160,
+    ) == (2960, 1848)
+
+
+def test_edge_aligned_size_when_device_is_shorter_than_the_monitor():
+    assert resolve_capture_size(
+        device_w=1280, device_h=800,
+        config_w=0, config_h=0,
+        monitor_w=1920, monitor_h=1080,
+    ) == (1280, 800)
+
+
+def test_device_only_fallback_when_monitor_is_unknown():
+    """Device known, monitor implausible: use the device dimensions as-is."""
+    assert resolve_capture_size(
+        device_w=2960, device_h=1848,
+        config_w=0, config_h=0,
+        monitor_w=0, monitor_h=0,
     ) == (2960, 1848)
 
 
@@ -46,15 +86,17 @@ def test_falls_back_to_monitor_when_device_is_unknown():
 
 
 def test_clamps_to_decoder_limit_preserving_aspect():
+    # The edge-aligned base size here is 1730x1080; pick a limit small
+    # enough that the clamp actually has to act on it.
     w, h = resolve_capture_size(
         device_w=2960, device_h=1848,
         config_w=0, config_h=0,
         monitor_w=1920, monitor_h=1080,
-        max_w=1920, max_h=1920,
+        max_w=1000, max_h=1000,
     )
-    assert w <= 1920 and h <= 1920
-    # 2960/1848 = 1.6017; allow a pixel of rounding either way
-    assert abs((w / h) - (2960 / 1848)) < 0.01
+    assert w <= 1000 and h <= 1000
+    # 1730/1080 = 1.6019; allow a pixel of rounding either way
+    assert abs((w / h) - (1730 / 1080)) < 0.01
 
 
 def test_clamp_is_ignored_when_limits_are_zero():
@@ -63,7 +105,7 @@ def test_clamp_is_ignored_when_limits_are_zero():
         config_w=0, config_h=0,
         monitor_w=1920, monitor_h=1080,
         max_w=0, max_h=0,
-    ) == (2960, 1848)
+    ) == (1730, 1080)
 
 
 def test_result_is_always_even():
@@ -83,13 +125,23 @@ def test_result_is_always_even():
 # stretched. Released clients cannot be updated; this must be normalised here.
 
 
-def test_portrait_report_is_swapped_to_landscape():
-    """A tablet connected in portrait reports 1848x2960; capture 2960x1848."""
-    assert resolve_capture_size(
+def test_portrait_report_is_swapped_to_landscape_before_deriving_aspect():
+    """A tablet connected in portrait reports 1848x2960.
+
+    This is the ordering trap: the aspect ratio used for the edge-aligned
+    derivation must come from the normalised *landscape* shape (2960x1848),
+    not the raw portrait report — otherwise the aspect comes out inverted
+    and the result is a stretched, not fixed, stream. With a 1920x1080
+    monitor this must land on the same 1730x1080 as an honestly-reported
+    landscape device.
+    """
+    w, h = resolve_capture_size(
         device_w=1848, device_h=2960,
         config_w=0, config_h=0,
         monitor_w=1920, monitor_h=1080,
-    ) == (2960, 1848)
+    )
+    assert (w, h) == (1730, 1080)
+    assert w > h, "result must be landscape despite the portrait report"
 
 
 def test_landscape_report_is_left_alone():
@@ -97,17 +149,25 @@ def test_landscape_report_is_left_alone():
         device_w=2960, device_h=1848,
         config_w=0, config_h=0,
         monitor_w=1920, monitor_h=1080,
-    ) == (2960, 1848)
+    ) == (1730, 1080)
 
 
 def test_explicit_portrait_orientation_is_respected():
-    """`orientation="portrait"` is a deliberate user choice, not an accident."""
-    assert resolve_capture_size(
+    """`orientation="portrait"` is a deliberate user choice, not an accident.
+
+    The edge-aligned derivation still applies — height is capped by the
+    monitor and width follows the device's (portrait) aspect ratio — but
+    the result stays portrait-shaped rather than being flipped to
+    landscape.
+    """
+    w, h = resolve_capture_size(
         device_w=1848, device_h=2960,
         config_w=0, config_h=0,
         monitor_w=1920, monitor_h=1080,
         orientation="portrait",
-    ) == (1848, 2960)
+    )
+    assert (w, h) == (674, 1080)
+    assert h > w, "explicit portrait must not be flipped to landscape"
 
 
 def test_normalise_orientation_swaps_only_portrait():
