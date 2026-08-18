@@ -49,9 +49,9 @@ class TethrLinkApp(Gtk.Application):
             flags=Gio.ApplicationFlags.FLAGS_NONE,
         )
         self._config     = ServerConfig()
-        # Codec override for testing. The shipped default stays JPEG until the
-        # H.264 path is validated on hardware; setting TETHRLINK_CODEC=h264
-        # selects it without changing what users get.
+        # Codec override for testing/comparison. ServerConfig now defaults to
+        # H.264; set TETHRLINK_CODEC=jpeg to fall back to the old path, or
+        # TETHRLINK_CODEC=h264 to be explicit about it.
         _codec_env = os.environ.get("TETHRLINK_CODEC")
         if _codec_env:
             self._config.codec = detect_codec(_codec_env.strip().lower())

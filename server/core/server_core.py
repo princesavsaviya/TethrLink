@@ -125,7 +125,17 @@ class ServerConfig:
     # at session start, so the keyframe interval follows automatically.
     fps: int = 30
     quality: int = 90
-    codec: int = CODEC_JPEG
+    # H.264 is the default as of this release, not JPEG. It used to be the
+    # other way around because the H.264 path was genuinely broken — it
+    # corrupted the picture. That has since been fixed: frames now travel
+    # through a lossless FIFO instead of a lossy one, the hardware encoder is
+    # negotiated at runtime under real rate control instead of a guess,
+    # capture geometry is derived from the connected device rather than the
+    # PC's monitor, and the pipeline runs at a constant frame rate. The
+    # result has been validated on hardware, so this flip is deliberate, not
+    # an accident. `TETHRLINK_CODEC` still overrides this — set it to `jpeg`
+    # to fall back to the old path for comparison.
+    codec: int = CODEC_H264
     bitrate: int = 0        # 0 = derive automatically from resolution and frame rate
     h264_width: int = 1280
     port: int = 51137
