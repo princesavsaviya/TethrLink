@@ -642,13 +642,15 @@ class PipeWireCapture:
     def __init__(self, node_id: int, width: int, height: int, codec: int,
                  fps: int, bitrate: int, h264_width: int, quality: int = 90,
                  flip_orientation: bool = False,
-                 on_error: Optional[Callable] = None):
+                 on_error: Optional[Callable] = None,
+                 encoder_spec: Optional[EncoderSpec] = None):
         self.width  = width
         self.height = height
         self.codec  = codec
         self._fw    = width
         self._fh    = height
         self._lock  = threading.Lock()
+        self._encoder_spec = encoder_spec
 
         # H.264 is an inter-frame codec: losing one encoded frame corrupts
         # every frame until the next keyframe, so its path must be lossless.
@@ -680,6 +682,25 @@ class PipeWireCapture:
             h264_h = int(h264_width / aspect)
             if h264_h % 2 != 0:
                 h264_h += 1
+
+            if self._encoder_spec is not None:
+                encoder_fragment = self._encoder_spec.to_pipeline_fragment()
+            else:
+                # Preserved fallback: the previously hardcoded software encoder.
+                encoder_fragment = (
+                    "x264enc tune=zerolatency speed-preset=ultrafast "
+                    "pass=cbr bitrate=25000 key-int-max=45 bframes=0"
+                )
+
+            # option-string is x264-specific and would fail to parse on any
+            # other encoder, so it is appended conditionally rather than
+            # carried in the props dict that to_pipeline_fragment() renders.
+            if encoder_fragment.startswith("x264enc"):
+                encoder_fragment += (
+                    ' option-string="colorprim=bt709:transfer=bt709:'
+                    'colormatrix=bt709:fullrange=off"'
+                )
+
             pipeline_str = (
                 f"pipewiresrc path={node_id} always-copy=true "
                 # Dropping RAW frames is safe — it only lowers framerate.
@@ -688,8 +709,7 @@ class PipeWireCapture:
                 f"! videorate "
                 f"! videoconvert ! videoscale "
                 f"! video/x-raw,format=NV12,width={h264_width},height={h264_h},framerate={fps}/1,colorimetry=bt709 "
-                f"! x264enc tune=zerolatency speed-preset=medium pass=qual quantizer=1 key-int-max=45 "
-                f"  option-string=\"colorprim=bt709:transfer=bt709:colormatrix=bt709:fullrange=off\" "
+                f"! {encoder_fragment} "
                 f"! h264parse config-interval=-1 "
                 f"! video/x-h264,stream-format=byte-stream,alignment=au,profile=high "
                 # drop=false: everything downstream of the encoder is lossless.
@@ -1372,12 +1392,25 @@ class ServerCore:
                         except Exception:
                             pass
 
+                enc_spec = None
+                if codec == CODEC_H264:
+                    enc_spec = select_encoder(EncoderConfig(
+                        bitrate_kbps=(
+                            self._config.bitrate
+                            if self._config.bitrate > 0
+                            else default_bitrate_kbps(width, height, self._live_fps)
+                        ),
+                        gop_length=self._live_fps,
+                        rate_control=RateControl.CBR,
+                    ))
+
                 capture = PipeWireCapture(
                     node_id, width, height, codec,
                     self._live_fps, self._config.bitrate, self._config.h264_width,
                     self._live_quality,
                     flip_orientation=(self._config.orientation == "portrait"),
                     on_error=_on_capture_error,
+                    encoder_spec=enc_spec,
                 )
             else:
                 # X11: try xrandr VIRTUAL output only (no Xvfb — it starts blank
