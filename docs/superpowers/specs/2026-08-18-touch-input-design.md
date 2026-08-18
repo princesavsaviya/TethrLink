@@ -192,20 +192,72 @@ live effect.
 
 ## 8. Security
 
-Input is a genuine escalation of what a connected peer can do: previously
-reaching the port meant *seeing* the screen, now it means *controlling* the
-machine. Mitigations, stated honestly:
+### 8.0 The server is not USB-only today — this must change first
 
-- Transport is USB tethering on a private subnet, so the attack surface is a
-  physically attached device.
-- Input is scoped to the virtual display's stream by the API itself and cannot
-  reach other monitors.
-- The feature can be turned off, and defaults are decided in §11.
+`server_core.py` binds `("0.0.0.0", port)` and `discovery.py` broadcasts to
+`255.255.255.255`. The server is therefore reachable from **any** network
+interface, not just USB tethering, and there is no authentication. This was
+already observed in practice: a tablet on the LAN raced a local test connection
+for the client lock.
 
-There is **no authentication on the connection today** — any peer that reaches
-the port is served. That was tolerable for a view-only stream and is weaker
-once input exists. Pairing or a connection secret is out of scope for 2.0.0 but
-should be considered before any transport that is not a physical cable.
+For a view-only stream that is a privacy problem. **With input it becomes
+remote control of the machine by anyone on the same Wi-Fi.**
+
+**Required for 2.0.0: bind to the USB tethering interface only** (the
+`192.168.42.0/24` subnet), and scope discovery to that interface's broadcast
+address rather than the global one. This is a server-side control that a
+modified client cannot bypass, and it matches what the product already claims
+to be — a wired second monitor, no Wi-Fi involved.
+
+This is listed first because it is the only mitigation here that is a genuine
+security boundary rather than a cooperative one.
+
+
+### 8.1 Layered controls
+
+Input is a genuine escalation: reaching the port used to mean *seeing* the
+screen; now it means *controlling* the machine. The controls below are ordered
+by how much they can actually be relied on.
+
+**Real boundaries — enforced server-side, not bypassable by a modified client:**
+
+1. **Interface binding** (§8.0) — confines reach to a physically attached device.
+2. **Off by default.** Touch is disabled unless the user turns it on.
+3. **No session, not a filtered session.** When disabled, no RemoteDesktop
+   session is created at all. The capability does not exist rather than existing
+   and being ignored.
+4. **Stream-scoped input.** `NotifyPointerMotionAbsolute` takes the ScreenCast
+   stream path, so input is confined to the virtual display by the API itself.
+   It cannot reach the laptop's own screen. This is a property of the platform,
+   not of our code, which makes it strong.
+5. **No keyboard in 2.0.0.** Pointer input alone cannot type a command, a
+   password, or a URL. This meaningfully bounds the blast radius, and is worth
+   weighing when keyboard support is added in 2.2.0.
+6. **Clipboard stays off.** The API exposes `EnableClipboard`, `SetSelection`
+   and `SelectionRead`. We deliberately do not call them, so no clipboard or
+   file content crosses the link. There is no file transfer of any kind.
+7. **Sessions stop on disconnect**, so a dropped connection cannot leave input
+   capability alive.
+8. **Input is rate-limited**, so a flood cannot saturate the D-Bus connection or
+   render the desktop unusable.
+
+**Cooperative controls — good behaviour, not boundaries.** These live in the
+Android client and a modified client could ignore them. They are worth having
+because they prevent *accidents*, which is the realistic risk on a personal
+device:
+
+9. **Input pauses unless the app is genuinely in front** — backgrounded,
+   split-screen, or a locked screen all suspend sending. Pointer state is
+   released on suspension so no button is left stuck down.
+
+**Still absent, and deliberately so:** there is no authentication or pairing.
+Once §8.0 confines the link to a cable, a peer must be physically attached,
+which is a reasonable trust boundary for 2.0.0. Any future transport that is
+*not* a cable must add pairing before enabling input.
+
+**Recommended: a visible indicator on the PC** while input is enabled. GNOME
+shows an indicator for screen recording; the user should likewise be able to
+tell at a glance that their desktop is remotely controllable.
 
 ## 9. Error handling and testing
 
@@ -239,10 +291,30 @@ Requiring live GNOME, and therefore manually verified: session pairing,
   not planned yet.
 - **Authentication / pairing** — see §8.
 
-## 11. Open decisions
+## 11. Resolved decisions
 
-1. **Should touch default to on or off** for a fresh install? On is the better
-   experience and is what the release is for; off is the more conservative
-   default for a capability that can control the machine.
-2. **Long-press duration** before it becomes a right click, and how much finger
-   movement to tolerate before treating it as a drag instead.
+**Touch is off by default** (2026-08-18). A capability that can drive the user's
+desktop should be opted into, not out of. Turning it on is one toggle.
+
+**Gesture timings come from the platform, not from constants** (2026-08-18).
+Android already provides these, and they are the industry reference the rest of
+the OS uses:
+
+| Value | Source | Typical |
+|---|---|---|
+| Long-press threshold | `ViewConfiguration.getLongPressTimeout()` | 500 ms |
+| Drag threshold | `ViewConfiguration.get(ctx).scaledTouchSlop` | ~8 dp |
+
+Reading them rather than hardcoding is the better engineering choice for three
+reasons: 500 ms and 8 dp are what Android, iOS, GTK and Windows all converge on,
+so behaviour matches every other app on the device; `scaledTouchSlop` is
+density-scaled, so a fixed pixel count would mean different physical distances
+on different tablets; and users who have adjusted long-press timing for
+accessibility get their preference honoured automatically.
+
+If testing shows these need tuning for this particular interaction, they become
+tunables seeded from the platform values, not replacements for them.
+
+**The absence of hover is accepted** (2026-08-18). Every touch clicks; tooltips
+and hover-reveal menus will not trigger. This is inherent to absolute-pointer
+mode and is the motivation for real multi-touch later, not a defect to patch.
