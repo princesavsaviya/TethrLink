@@ -14,6 +14,8 @@ def test_starts_at_zero():
         "duplicates_suppressed": 0,
         "queue_overflows": 0,
         "keyframe_requests": 0,
+        "input_events_received": 0,
+        "input_events_dropped": 0,
     }
 
 

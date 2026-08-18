@@ -6,13 +6,14 @@ Used by both app.py (GUI) and the CLI shim (tethrlink_server.py).
 
 import logging
 import os
+import select
 import socket
 import struct
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 import dbus
 import dbus.mainloop.glib
@@ -37,6 +38,17 @@ from server.core.preflight import (
 from server.core.frame_queue import EncodedFrameQueue, LatestFrameSlot
 from server.core.geometry import is_plausible_size, resolve_capture_size
 from server.core.metrics import StreamMetrics
+from server.core.remote_input import RemoteInput
+from server.core.input_protocol import (
+    InputMessage,
+    MSG_POINTER_AXIS,
+    MSG_POINTER_BUTTON,
+    MSG_POINTER_MOTION,
+    decode_axis,
+    decode_button,
+    decode_motion,
+    parse_messages,
+)
 from server.core.encoder import (
     CANDIDATES,
     CQP_PROPERTY,
@@ -198,6 +210,213 @@ def parse_input_extension(header: bytes, payload: bytes) -> bool:
         # all fail gracefully. Catch any unforeseen exception and degrade
         # to "no input support" rather than breaking the connection.
         return False
+
+
+# ── Input reading (Task 5) ────────────────────────────────────────────────────
+# Consumes input_protocol.py's framing/decoders (Task 2) and drives the
+# pointer through remote_input.py's RemoteInput (Task 3). Kept as plain
+# module-level functions, same as parse_input_extension() above, so the
+# pieces that don't need a socket or a live D-Bus session — buffer
+# accumulation/capping, message routing, counter bookkeeping — are testable
+# on their own.
+
+INPUT_READ_CHUNK_BYTES = 4096
+# How often the reader thread's select() call returns on its own so it can
+# re-check should_stop() even when the client sends nothing. Deliberately
+# NOT implemented via conn.settimeout(): that would change the timeout on
+# the very socket object the send loop's blocking sendall() calls also use,
+# which is exactly the cross-thread interference requirement 8 ("never
+# disturb the send loop") rules out. select() lets this loop wait without
+# touching that shared state at all.
+INPUT_READ_POLL_S = 1.0
+# The wire format caps one pending frame at header(2) + max payload(255) =
+# 257 bytes — see input_protocol.py's module docstring (type:u8 length:u8
+# payload[length]). A well-behaved peer's carried-forward remainder should
+# never sit above that. This reader enforces its own ceiling regardless: a
+# peer that sends a header claiming a payload and never finishes it (or any
+# other malformed stream) must not be allowed to grow this buffer without
+# bound while more bytes keep arriving — so once the remainder exceeds
+# this, it is discarded outright and framing resyncs from the next byte
+# read, rather than trusting the peer's declared length forever.
+INPUT_BUFFER_CAP_BYTES = 257
+# Caps sustained input dispatches (motion + button-press + axis combined)
+# to this many per second, after an initial burst — see
+# INPUT_DISPATCH_BURST below for why a burst allowance, not a strict
+# minimum interval, is what's actually needed. RemoteInput.move() already
+# coalesces motion on its own (see its docstring), but button() and axis()
+# are never coalesced there — each is its own synchronous D-Bus round
+# trip — so a flood of either, or just raw message volume in general,
+# must be bounded here or it can saturate D-Bus or make the desktop
+# unusable.
+INPUT_DISPATCH_RATE_HZ = 200
+# A single realistic gesture routinely produces more than one dispatch at
+# once: a tap sends motion (the touch-down position) immediately followed
+# by a button press, and a drag start adds axis on top of that — normally
+# arriving in the same read, microseconds apart. A limiter with zero
+# burst tolerance (a strict "no two dispatches closer than 1/rate")
+# would throttle every one of these completely ordinary bursts, most
+# visibly as taps whose press silently never reaches the desktop. This
+# is the token-bucket burst size that absorbs any single gesture's
+# coupled events before the sustained INPUT_DISPATCH_RATE_HZ limit takes
+# over — see _RateLimiter below.
+INPUT_DISPATCH_BURST = 20
+
+
+class _RateLimiter:
+    """Token bucket: up to `burst` dispatches allowed instantly, then
+    refilling at `rate_hz` tokens/second. Each run_input_reader() call
+    constructs its own — the budget is per connection, never shared."""
+
+    def __init__(self, rate_hz: float = INPUT_DISPATCH_RATE_HZ,
+                 burst: int = INPUT_DISPATCH_BURST):
+        self._rate = rate_hz
+        self._capacity = float(burst)
+        self._tokens = float(burst)
+        self._last = time.monotonic()
+
+    def allow(self) -> bool:
+        now = time.monotonic()
+        elapsed = max(0.0, now - self._last)
+        self._last = now
+        self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return True
+        return False
+
+
+def dispatch_input_message(msg: InputMessage, remote_input: RemoteInput,
+                            metrics: StreamMetrics,
+                            allow_rate_limited: Callable[[], bool] = lambda: True) -> None:
+    """Decode one already-framed input message and forward it to
+    `remote_input`, or count it dropped.
+
+    Factored out of the reader loop so routing is testable with a fake
+    RemoteInput and no socket. Callers are responsible for counting the
+    message under input_events_received before calling this.
+
+    `allow_rate_limited` gates motion, axis, and button-*press* events —
+    call sites pass the flood limiter here, and a False consults counts
+    as dropped. A button *release* is always forwarded regardless of what
+    it says: dropping a press just means nothing happens on the OS side,
+    but dropping a release for a button RemoteInput already believes is
+    held would leave it stuck down until the connection ends — the single
+    worst failure mode this feature has (see remote_input.py's module
+    docstring) — so releases are deliberately exempt from the flood
+    limiter. The default no-op limiter (always allow) is what makes this
+    function usable standalone in tests that aren't exercising rate
+    limiting at all.
+
+    Never raises: RemoteInput's own methods are exception-safe by
+    contract, and every decode_* helper here returns None rather than
+    raising on malformed input.
+    """
+    if msg.type == MSG_POINTER_MOTION:
+        decoded = decode_motion(msg.payload)
+        if decoded is None or not allow_rate_limited():
+            metrics.incr("input_events_dropped")
+            return
+        remote_input.move(*decoded)
+    elif msg.type == MSG_POINTER_BUTTON:
+        decoded = decode_button(msg.payload)
+        if decoded is None:
+            metrics.incr("input_events_dropped")
+            return
+        code, pressed = decoded
+        if pressed and not allow_rate_limited():
+            metrics.incr("input_events_dropped")
+            return
+        remote_input.button(code, pressed)
+    elif msg.type == MSG_POINTER_AXIS:
+        decoded = decode_axis(msg.payload)
+        if decoded is None or not allow_rate_limited():
+            metrics.incr("input_events_dropped")
+            return
+        remote_input.axis(*decoded)
+    else:
+        metrics.incr("input_events_dropped")
+
+
+def accumulate_input_buffer(buffer: bytes, chunk: bytes) -> Tuple[List[InputMessage], bytes, bool]:
+    """Append a freshly-read `chunk` to `buffer`, parse out complete
+    messages, and enforce INPUT_BUFFER_CAP_BYTES on what's carried forward.
+
+    Returns (messages, new_buffer, overflowed). `overflowed` is True when
+    the remainder parse_messages() left behind exceeded the cap, in which
+    case `new_buffer` is already b"" — the pending bytes were discarded so
+    framing resyncs from the next read, rather than growing forever on a
+    peer that sends a header claiming a payload and never finishes it (or
+    any other malformed stream). Split out of the reader loop so it is
+    unit-testable without a socket.
+    """
+    messages, remainder = parse_messages(buffer + chunk)
+    if len(remainder) > INPUT_BUFFER_CAP_BYTES:
+        return messages, b"", True
+    return messages, remainder, False
+
+
+def run_input_reader(conn: socket.socket, remote_input: RemoteInput,
+                      metrics: StreamMetrics,
+                      should_stop: Callable[[], bool]) -> None:
+    """Read client input messages off `conn` until it closes or
+    `should_stop()` says to, dispatching each to `remote_input`.
+
+    Runs on its own daemon thread, one per connection, started only when
+    input was negotiated and a RemoteInput session exists (see
+    _handle_client). select() — not conn.settimeout() — is what lets this
+    loop wake periodically to re-check should_stop(): the same socket
+    object is shared with the send loop's blocking sendall() calls, and
+    settimeout() would change the timeout for those too. This function
+    never sets or reads conn's timeout at all, so it cannot disturb them.
+
+    Every parsed message is counted under input_events_received; an
+    unknown type, an undecodable payload, or a motion/axis/button-press
+    beyond what the per-connection _RateLimiter currently allows is
+    additionally counted under input_events_dropped and skipped — never
+    raised, and never a reason to close the connection. Button releases
+    are exempt from that limiter regardless of volume — see
+    dispatch_input_message()'s docstring for why.
+
+    A failure anywhere in this function is caught and logged, never
+    raised — its only contract with the rest of the server is to never
+    disturb the send loop, and an uncaught exception on a daemon thread
+    would otherwise vanish silently while conceivably leaving a button
+    held. release_all() in the finally block is what actually guarantees a
+    button is never left stuck down, regardless of how this loop exits:
+    clean disconnect, error, or shutdown.
+    """
+    buffer = b""
+    limiter = _RateLimiter()  # one independent budget per connection
+    try:
+        while not should_stop():
+            try:
+                ready, _, _ = select.select([conn], [], [], INPUT_READ_POLL_S)
+            except (OSError, ValueError):
+                break  # socket already closed out from under us
+            if not ready:
+                continue
+            try:
+                chunk = conn.recv(INPUT_READ_CHUNK_BYTES)
+            except (OSError, socket.timeout):
+                break
+            if not chunk:
+                break  # peer closed its write side
+            messages, buffer, overflowed = accumulate_input_buffer(buffer, chunk)
+            if overflowed:
+                log.warning(
+                    "Input buffer exceeded %d bytes — discarding and "
+                    "resyncing framing", INPUT_BUFFER_CAP_BYTES,
+                )
+            for msg in messages:
+                metrics.incr("input_events_received")
+                dispatch_input_message(msg, remote_input, metrics, limiter.allow)
+    except Exception as e:
+        log.debug("Input reader stopping on unexpected error: %s", e)
+    finally:
+        try:
+            remote_input.release_all()
+        except Exception:
+            pass
 
 
 # ── Config & State ────────────────────────────────────────────────────────────
@@ -394,7 +613,9 @@ def cleanup_orphaned_sessions(bus):
 
 
 class MutterVirtualDisplay:
-    def __init__(self, width: int, height: int, bus=None):
+    def __init__(self, width: int, height: int, bus=None,
+                 remote_input: Optional[RemoteInput] = None,
+                 remote_input_session_id: Optional[str] = None):
         self.width       = width
         self.height      = height
         self._node_id    = None
@@ -404,6 +625,18 @@ class MutterVirtualDisplay:
         self._bus  = bus or dbus.SessionBus()
         self._context = GLib.MainContext()
         self._loop    = GLib.MainLoop(self._context)
+        # Task 5's input pairing: when both are given, this ScreenCast
+        # session is created with remote-desktop-session-id set to
+        # remote_input_session_id, binding it to remote_input's
+        # already-created RemoteDesktop session. Verified on a live Mutter
+        # 46 session: once paired, only the RemoteDesktop session's own
+        # Start()/Stop() may be called — calling this ScreenCast session's
+        # Start()/Stop() directly raises "Must be started/stopped from
+        # remote desktop session". See setup()/close() below.
+        self._remote_input = remote_input
+        self._remote_input_session_id = remote_input_session_id
+        self._paired = False   # set in setup() once pairing props are used
+        self._stream_path: Optional[str] = None
         cleanup_orphaned_sessions(self._bus)
         sc_obj    = self._bus.get_object(MUTTER_BUS, MUTTER_PATH)
         self._sc  = dbus.Interface(sc_obj, MUTTER_SC_IF)
@@ -412,17 +645,35 @@ class MutterVirtualDisplay:
     def setup(self) -> int:
         log.info("Creating Mutter ScreenCast session...")
 
-        # Try to suppress GNOME screen-recording indicator (Mutter ≥ 44 honours this)
-        for props in [{"disable-notifications": dbus.Boolean(True)}, {}]:
+        pairing_props = {}
+        if self._remote_input is not None and self._remote_input_session_id is not None:
+            pairing_props = {
+                "remote-desktop-session-id": dbus.String(self._remote_input_session_id)
+            }
+
+        # Try to suppress GNOME screen-recording indicator (Mutter ≥ 44
+        # honours this), retrying without it if that combination is
+        # rejected. Pairing props, when present, are included in every
+        # attempt — unlike disable-notifications they are not optional once
+        # input was negotiated and paired for this connection. Which
+        # attempt is "last" is now tracked by index rather than by the
+        # props dict being falsy, since a non-empty pairing_props dict
+        # would otherwise be (wrongly) truthy on the final attempt too.
+        attempts = [
+            {**pairing_props, "disable-notifications": dbus.Boolean(True)},
+            dict(pairing_props),
+        ]
+        for i, props in enumerate(attempts):
             try:
                 self._session_path = str(self._sc.CreateSession(
                     dbus.Dictionary(props, signature="sv")
                 ))
                 break
             except Exception as e:
-                if not props:
+                if i == len(attempts) - 1:
                     raise
                 log.debug("CreateSession with disable-notifications failed (%s), retrying plain", e)
+        self._paired = bool(pairing_props)
 
         session_obj = self._bus.get_object(MUTTER_BUS, self._session_path)
         session     = dbus.Interface(session_obj, MUTTER_SES_IF)
@@ -442,13 +693,24 @@ class MutterVirtualDisplay:
         stream_path = str(session.RecordVirtual(
             dbus.Dictionary({"cursor-mode": dbus.UInt32(1)}, signature="sv")
         ))
+        self._stream_path = stream_path
         stream_obj = self._bus.get_object(MUTTER_BUS, stream_path)
         stream_obj.connect_to_signal("PipeWireStreamAdded",
             lambda node_id: (setattr(self, "_node_id", int(node_id)),
                              log.info("PipeWire node: %d", int(node_id)),
                              self._loop.quit()),
             dbus_interface=MUTTER_STR_IF)
-        session.Start()
+
+        if self._paired:
+            # Paired: only the RemoteDesktop session's own Start() may be
+            # called (see __init__'s docstring note) — it drives this
+            # ScreenCast session too. bind_stream() first so the pointer
+            # methods have a valid stream the instant the session comes up.
+            self._remote_input.bind_stream(stream_path)
+            self._remote_input.start()
+        else:
+            session.Start()
+
         GLib.timeout_add(MUTTER_SETUP_TIMEOUT_MS, lambda: (
             setattr(self, "_error", "Timeout"), self._loop.quit()
         ))
@@ -459,6 +721,19 @@ class MutterVirtualDisplay:
         return self._node_id
 
     def close(self):
+        if self._paired and self._remote_input is not None:
+            # This ScreenCast session's own Stop() raises "must be stopped
+            # from remote desktop session" once paired (same constraint as
+            # Start(), verified on a live Mutter 46 session) — only the
+            # RemoteDesktop session's Stop() actually tears down both.
+            # RemoteInput.stop() also flushes any pending motion and
+            # releases any held button, so this is the only call needed
+            # for a paired session's teardown.
+            try:
+                self._remote_input.stop()
+            except Exception:
+                pass
+            return
         if self._session_path:
             try:
                 obj = self._bus.get_object(MUTTER_BUS, self._session_path)
@@ -1745,6 +2020,11 @@ class ServerCore:
         # _client_lock would be held until server shutdown, answering every
         # reconnect with MAGIC_BUSY. The send loop now checks this event.
         session_stop = threading.Event()
+        # Separate from session_stop: this one only ever tells the input
+        # reader thread (Task 5, started below once the handshake reply is
+        # sent) to stop, so the send loop's own stop condition is never
+        # coupled to input's lifecycle by accident.
+        input_stop = threading.Event()
 
         # ── Save device dims: on the H.264 path these now drive the capture
         # resolution itself (see resolve_capture_size below), not just the UI
@@ -1844,18 +2124,68 @@ class ServerCore:
         # ── Set up capture (Wayland: Mutter virtual display, X11: mss) ─────────
         display = None
         capture = None
+        remote_input = None            # set below when input is negotiated
+                                        # and pairing succeeds (Task 5)
+        input_reader_thread = None
         self._log(f"Session type: {session_type.upper()}")
         try:
             if session_type == "wayland":
-                display = MutterVirtualDisplay(width, height, self._bus)
+                remote_input_session_id = None
+                if self._input_negotiated:
+                    candidate = RemoteInput(
+                        width, height, self._bus,
+                        frame_interval_s=1.0 / self._live_fps,
+                    )
+                    candidate_session_id = candidate.create()
+                    if candidate_session_id is not None:
+                        remote_input = candidate
+                        remote_input_session_id = candidate_session_id
+                    # else: create() already logged why — continue
+                    # video-only, same as every other "no input this
+                    # session" outcome remote_input.py documents as a
+                    # normal, supported result, not an error.
+
+                display = MutterVirtualDisplay(
+                    width, height, self._bus,
+                    remote_input=remote_input,
+                    remote_input_session_id=remote_input_session_id,
+                )
                 try:
                     node_id = display.setup()
                 except Exception as e:
-                    self._log(f"Virtual display failed: {e}")
-                    display.close()
-                    self._client_lock.release()
-                    conn.close()
-                    return
+                    if remote_input is not None:
+                        # Mutter's own coupling means a paired session's
+                        # Start() failure takes the ScreenCast side down
+                        # with it (verified live — see MutterVirtualDisplay's
+                        # docstring note). Video is the product; input is
+                        # an addition — retry once, unpaired, before
+                        # failing the whole connection over what may be an
+                        # input-only problem.
+                        log.warning(
+                            "Virtual display setup failed with input "
+                            "paired (%s) — retrying video-only", e,
+                        )
+                        try:
+                            remote_input.stop()
+                        except Exception:
+                            pass
+                        remote_input = None
+                        display.close()
+                        display = MutterVirtualDisplay(width, height, self._bus)
+                        try:
+                            node_id = display.setup()
+                        except Exception as e2:
+                            self._log(f"Virtual display failed: {e2}")
+                            display.close()
+                            self._client_lock.release()
+                            conn.close()
+                            return
+                    else:
+                        self._log(f"Virtual display failed: {e}")
+                        display.close()
+                        self._client_lock.release()
+                        conn.close()
+                        return
 
                 self._log("Virtual display ready — arrange windows using System Settings > Displays")
 
@@ -1988,6 +2318,23 @@ class ServerCore:
             conn.sendall(reply_magic + struct.pack(">IIB", w, h, codec))
             self._log(f"Streaming → {device_name}"
                       + (" (input enabled)" if self._input_negotiated else ""))
+
+            # ── Start the input reader (Task 5) ─────────────────────────────
+            # Only when input was negotiated AND a RemoteInput session
+            # actually exists — pairing may have failed and fallen back to
+            # video-only above, in which case remote_input is None here and
+            # no reader starts. See run_input_reader()'s docstring for why
+            # this never touches conn's timeout, which the send loop below
+            # also relies on.
+            if self._input_negotiated and remote_input is not None:
+                input_reader_thread = threading.Thread(
+                    target=run_input_reader,
+                    args=(conn, remote_input, capture.metrics, input_stop.is_set),
+                    daemon=True,
+                    name="tethrlink-input-reader",
+                )
+                input_reader_thread.start()
+                log.info("Input reader started for %s", device_name)
             if capture.is_inter_frame:
                 # The H.264 framerate lives in the pipeline caps, fixed when
                 # the pipeline was built, and the send loop is now driven by
@@ -2175,6 +2522,15 @@ class ServerCore:
         finally:
             self._conn = None
             self._state.update(connected=False, client_name="", fps=0)
+            # Signal the input reader (if one was started) to stop and give
+            # it a bounded window to actually exit — its own finally clause
+            # calls RemoteInput.release_all(), and running that before
+            # display.close() tears the paired session down is what
+            # guarantees a button is never left held on any exit path from
+            # this method.
+            input_stop.set()
+            if input_reader_thread is not None:
+                input_reader_thread.join(timeout=2.0)
             if capture and self._capture is not None:
                 # _on_session_closed may have already closed this — guard against double-close
                 try:

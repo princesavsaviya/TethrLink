@@ -10,6 +10,8 @@ _COUNTERS = (
     "duplicates_suppressed",
     "queue_overflows",
     "keyframe_requests",
+    "input_events_received",
+    "input_events_dropped",
 )
 
 
