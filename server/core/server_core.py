@@ -82,6 +82,19 @@ IDLE_KEEPALIVE_LOG_EVERY = 60
 PORT_SCAN_RANGE     = 10
 APPSINK_MAX_BUFFERS = 2
 
+# H.264-only buffering depths. The JPEG path keeps APPSINK_MAX_BUFFERS above
+# unchanged — its latency profile is the shipping default and is not part of
+# this fix. These three depths (leaky queue upstream of the encoder, the
+# H.264 appsink, and the lossless FIFO) together bounded the H.264 path at
+# roughly 8 frames (~265ms at 30fps) of pure pre-render buffering, which was
+# the dominant source of reported pointer lag. Shrinking them to ~4 frames
+# (~133ms) trades a higher chance of FIFO overflow — which costs one brief
+# keyframe resync — for lower latency on every single frame. Do not raise
+# these back up without accounting for that trade.
+H264_LEAKY_QUEUE_MAX_BUFFERS = 1
+H264_APPSINK_MAX_BUFFERS     = 1
+H264_FIFO_MAXSIZE            = 2
+
 # ── Mutter constants ──────────────────────────────────────────────────────────
 MUTTER_BUS    = "org.gnome.Mutter.ScreenCast"
 MUTTER_PATH   = "/org/gnome/Mutter/ScreenCast"
@@ -739,7 +752,7 @@ class PipeWireCapture:
         self.is_inter_frame = (codec == CODEC_H264)
         if self.is_inter_frame:
             self._sink_buffer = EncodedFrameQueue(
-                maxsize=4,
+                maxsize=H264_FIFO_MAXSIZE,
                 metrics=self.metrics,
                 on_overflow=self._request_keyframe,
             )
@@ -787,9 +800,9 @@ class PipeWireCapture:
                 # size comes from PipeWire format negotiation. The JPEG branch
                 # always had this; the H.264 branch did not, which is why it
                 # got Mutter's default and then rescaled.
-                f"! video/x-raw,width={width},height={height} "
+                f"! video/x-raw,width={width},height={height},max-framerate={fps}/1 "
                 # Dropping RAW frames is safe — it only lowers framerate.
-                f"! queue leaky=downstream max-size-buffers=2 max-size-bytes=0 max-size-time=0 "
+                f"! queue leaky=downstream max-size-buffers={H264_LEAKY_QUEUE_MAX_BUFFERS} max-size-bytes=0 max-size-time=0 "
                 f"! videorate "
                 f"! videoconvert "
                 f"! video/x-raw,format=NV12,framerate={fps}/1,colorimetry=bt709 "
@@ -802,7 +815,7 @@ class PipeWireCapture:
                 # keyframe, which is why dropping is confined to the leaky
                 # queue upstream of the encoder.
                 f"! appsink name=sink emit-signals=true "
-                f"  max-buffers={APPSINK_MAX_BUFFERS} drop=false sync=false"
+                f"  max-buffers={H264_APPSINK_MAX_BUFFERS} drop=false sync=false"
             )
         else:
             flip_method = "clockwise" if flip_orientation else "none"
