@@ -150,6 +150,56 @@ FALLBACK_WIDTH  = 1920
 FALLBACK_HEIGHT = 1080
 
 
+# ── Extension parsing (testable without network) ───────────────────────────────
+
+def parse_input_extension(header: bytes, payload: bytes) -> bool:
+    """Parse input-capability extension block and return whether input is advertised.
+
+    Pure function, no socket operations. Takes the bytes already read and
+    determines whether the client advertised pointer input support. Never raises
+    — all malformed blocks degrade to "no input support" rather than propagating
+    an exception into the connection handler.
+
+    Args:
+        header: The 5-byte extension header (marker + cap_len), or b"" if not read.
+        payload: The capability bytes (exactly cap_len of them), or b"" if not read.
+
+    Returns:
+        True if the extension is well-formed and the capability byte has
+        CAP_POINTER_INPUT bit set. False for any malformed/missing extension.
+    """
+    try:
+        # Header must be exactly EXT_HEADER_LEN bytes (5: "TLX1" + cap_len).
+        if len(header) != EXT_HEADER_LEN:
+            return False
+
+        # Header must start with the marker.
+        if header[:len(EXT_MARKER)] != EXT_MARKER:
+            return False
+
+        # Extract the declared payload length from the cap_len byte.
+        cap_len = header[len(EXT_MARKER)]
+
+        # cap_len of 0 means no capability bytes follow — nothing to check.
+        if cap_len == 0:
+            return False
+
+        # Payload must be exactly the declared length (never more, never fewer).
+        # This ensures nothing is left on the wire for the input reader to
+        # misinterpret as the first input message.
+        if len(payload) != cap_len:
+            return False
+
+        # Capability byte is the first byte of the payload. Check bit 0.
+        return bool(payload[0] & CAP_POINTER_INPUT)
+
+    except Exception:
+        # No input can make this raise: indexing, bitwise operations, len()
+        # all fail gracefully. Catch any unforeseen exception and degrade
+        # to "no input support" rather than breaking the connection.
+        return False
+
+
 # ── Config & State ────────────────────────────────────────────────────────────
 
 @dataclass
@@ -1661,9 +1711,11 @@ class ServerCore:
             ext_header = conn.recv(EXT_HEADER_LEN)
         except (socket.timeout, OSError):
             ext_header = b""
+
+        # Extract capability byte (if present) to determine if client wants input.
+        cap_payload = b""
         if len(ext_header) == EXT_HEADER_LEN and ext_header[:len(EXT_MARKER)] == EXT_MARKER:
             cap_len = ext_header[len(EXT_MARKER)]
-            cap_payload = b""
             if cap_len > 0:
                 # Read exactly the length the client declared — never more,
                 # never fewer — so nothing is left on the wire for the input
@@ -1672,8 +1724,9 @@ class ServerCore:
                     cap_payload = conn.recv(cap_len)
                 except (socket.timeout, OSError):
                     cap_payload = b""
-            if len(cap_payload) == cap_len and cap_len >= 1:
-                client_wants_input = bool(cap_payload[0] & CAP_POINTER_INPUT)
+
+        # Use the pure function to parse the extension safely.
+        client_wants_input = parse_input_extension(ext_header, cap_payload)
         conn.settimeout(HANDSHAKE_TIMEOUT_S)  # restore for the rest of the handshake
 
         # `touch_enabled` does not exist on ServerConfig yet (a later task
