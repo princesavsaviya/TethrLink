@@ -33,7 +33,7 @@ from server.core.preflight import (
     probe_encoders,
 )
 from server.core.frame_queue import EncodedFrameQueue, LatestFrameSlot
-from server.core.geometry import resolve_capture_size
+from server.core.geometry import is_plausible_size, resolve_capture_size
 from server.core.metrics import StreamMetrics
 from server.core.encoder import (
     CANDIDATES,
@@ -1325,42 +1325,69 @@ class ServerCore:
         # reconnect with MAGIC_BUSY. The send loop now checks this event.
         session_stop = threading.Event()
 
-        # ── Save device dims: these now drive the capture resolution itself
-        # (see resolve_capture_size below), not just the UI canvas ──
+        # ── Save device dims: on the H.264 path these now drive the capture
+        # resolution itself (see resolve_capture_size below), not just the UI
+        # canvas. JPEG deliberately still ignores them — see below for why. ──
         if screen_w > 0 and screen_h > 0:
             self._config.device_width  = screen_w
             self._config.device_height = screen_h
 
-        # ── Resolve resolution: user config override → device's own dims → PC's primary monitor ──
-        # The virtual display matches the connected device's resolution by default, so
-        # capture, encode, decode and render all agree on one size and nothing is
-        # rescaled. An explicit user-configured resolution always wins; the PC's
-        # primary monitor is only a last-resort fallback when the device reports none.
+        # ── Resolve capture resolution ────────────────────────────────────────
+        # The two codec paths deliberately resolve this differently.
+        #
+        # H.264 matches the connected device's own dimensions — capture,
+        # encode, decode and render then all agree on one size and nothing is
+        # rescaled. Inter-frame compression is what makes the extra pixels
+        # affordable: only what changed since the last frame is transmitted.
+        #
+        # JPEG keeps its previous behaviour: explicit config override, else the
+        # PC's primary monitor. Every JPEG frame is whole and independent —
+        # there is no inter-frame compression at all — so resolution costs it
+        # far more. Feeding it the device's size would take 1920×1080 to
+        # 2960×1848: 2.6x the pixels through jpegenc and 2.6x the bytes on the
+        # wire, every single frame. Measured JPEG throughput at 1920×1080 was
+        # already only ~20 fps and the larger size has never been measured on
+        # hardware. JPEG is the shipping default, so it does not get
+        # device-matched geometry until someone has measured what it costs.
+        session_type = detect_session_type()
+        codec = self._config.codec
+        # The X11 branch below captures with mss, which always produces JPEG
+        # regardless of the configured codec (it reassigns `codec` after
+        # building the capture). So H.264 only ever runs on Wayland, and the
+        # device-matched geometry must be gated on that too.
+        encodes_h264 = (codec == CODEC_H264 and session_type == "wayland")
+
         mon_w, mon_h = resolve_resolution(self._bus, 0, 0)
-        width, height = resolve_capture_size(
-            device_w=screen_w, device_h=screen_h,
-            config_w=self._config.width, config_h=self._config.height,
-            monitor_w=mon_w, monitor_h=mon_h,
-        )
-        if self._config.width > 0 and self._config.height > 0:
+        if encodes_h264:
+            width, height = resolve_capture_size(
+                device_w=screen_w, device_h=screen_h,
+                config_w=self._config.width, config_h=self._config.height,
+                monitor_w=mon_w, monitor_h=mon_h,
+                orientation=self._config.orientation,
+            )
+            if self._config.width > 0 and self._config.height > 0:
+                self._log(f"Using configured resolution: {width}×{height}")
+            elif is_plausible_size(screen_w, screen_h):
+                self._log(f"Matching device resolution: {width}×{height}")
+            else:
+                self._log(f"Using primary monitor resolution: {width}×{height}")
+        elif self._config.width > 0 and self._config.height > 0:
+            width, height = self._config.width, self._config.height
             self._log(f"Using configured resolution: {width}×{height}")
-        elif screen_w > 0 and screen_h > 0:
-            self._log(f"Matching device resolution: {width}×{height}")
         else:
+            width, height = mon_w, mon_h
             self._log(f"Using primary monitor resolution: {width}×{height}")
         self._state.update_direct(active_width=width, active_height=height)
 
         if self._config.orientation == "portrait" and width > height:
             width, height = height, width
 
-        codec = self._config.codec
         self._log(f"Starting — {width}×{height} @ {self._live_fps} FPS "
                   f"({'H.264' if codec == CODEC_H264 else 'JPEG'})")
 
         # ── Set up capture (Wayland: Mutter virtual display, X11: mss) ─────────
         display = None
         capture = None
-        session_type = detect_session_type()
         self._log(f"Session type: {session_type.upper()}")
         try:
             if session_type == "wayland":
