@@ -147,3 +147,57 @@ def test_save_writes_valid_json(tmp_path):
     store.save()
     parsed = json.loads((tmp_path / "p.json").read_text())
     assert isinstance(parsed, dict)
+
+
+# ── hardening: fixing gaps in the "never raises" contract ─────────────────────
+
+def test_save_returns_false_when_record_not_json_serializable(tmp_path):
+    """save() must return False, not raise, when a stored value cannot be
+    serialized (a set, dataclass, circular reference, etc.). The file must
+    remain intact if it existed before."""
+    store = ProfileStore(tmp_path / "p.json")
+    store.set_device("d", {"name": "phone"})
+    store.save()
+    original_content = (tmp_path / "p.json").read_text()
+
+    # Inject a non-serializable value (a set) directly into the internal state.
+    store._data["devices"]["d"]["tags"] = {"tag1", "tag2"}
+
+    # save() must return False and not raise.
+    assert store.save() is False
+
+    # The file must remain intact with the original content.
+    assert (tmp_path / "p.json").read_text() == original_content
+
+
+def test_get_encoder_returns_none_when_fingerprint_is_none(tmp_path):
+    """get_encoder(None) must return None even when a stored entry lacks
+    a fingerprint key. This prevents spurious matches."""
+    store = ProfileStore(tmp_path / "p.json")
+    # Manually inject an encoder entry without a fingerprint key.
+    store._data["encoder"] = {"record": {"element": "nvh264enc"}}
+
+    # get_encoder(None) should return None, not the stored record.
+    assert store.get_encoder(None) is None
+
+    # But with the correct fingerprint, it should still work.
+    store._data["encoder"]["fingerprint"] = "fp-123"
+    assert store.get_encoder("fp-123")["element"] == "nvh264enc"
+
+
+def test_temp_file_is_unique_per_process(tmp_path):
+    """The temporary file used during save must be unique per process,
+    not a fixed name, to avoid collisions when multiple processes save
+    concurrently."""
+    store = ProfileStore(tmp_path / "p.json")
+    store.set_device("d", {"name": "x"})
+    store.save()
+
+    # The fixed ".tmp" name should not exist.
+    fixed_tmp = tmp_path / "p.tmp"
+    assert not fixed_tmp.exists()
+
+    # No files matching the PID-based pattern should be left behind either.
+    import glob
+    pid_tmp_files = list(tmp_path.glob(f"p.*.tmp"))
+    assert len(pid_tmp_files) == 0

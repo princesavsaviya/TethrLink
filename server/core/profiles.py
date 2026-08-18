@@ -77,11 +77,13 @@ class ProfileStore:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             # Write via a temporary file so an interrupted save cannot leave a
             # half-written store behind for the next launch to choke on.
-            tmp = self._path.with_suffix(".tmp")
+            # Use PID to make the temp filename unique and avoid collisions
+            # when multiple processes save concurrently.
+            tmp = self._path.with_stem(f"{self._path.stem}.{os.getpid()}.tmp")
             tmp.write_text(json.dumps(self._data, indent=2))
             tmp.replace(self._path)
             return True
-        except OSError as e:
+        except (OSError, TypeError, ValueError) as e:
             log.debug("Could not write profile store %s: %s", self._path, e)
             return False
 
@@ -95,7 +97,8 @@ class ProfileStore:
         entry = self._data.get("encoder") or {}
         if not isinstance(entry, dict):
             return None
-        if entry.get("fingerprint") != fingerprint:
+        # Guard against falsy fingerprint so it can never match if not provided.
+        if not fingerprint or entry.get("fingerprint") != fingerprint:
             return None
         record = entry.get("record")
         return record if isinstance(record, dict) else None
