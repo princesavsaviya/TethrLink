@@ -63,6 +63,14 @@ CODEC_JPEG = 2
 
 # ── Timing constants ──────────────────────────────────────────────────────────
 HANDSHAKE_TIMEOUT_S     = 10.0
+# A legacy client sends nothing after the 94-byte hello and immediately blocks
+# waiting for our reply, so this must stay well under HANDSHAKE_TIMEOUT_S — if
+# it did not, every legacy connection (the common case today) would eat a
+# multi-second stall for an extension block that will never arrive. 0.2s is
+# long enough for a same-host/USB-tethered peer's extension bytes (sent
+# immediately after the hello, on the same write or the next one) to already
+# be sitting in the kernel receive buffer by the time we ask for them.
+EXTENSION_READ_TIMEOUT_S = 0.2
 FRAME_WAIT_ATTEMPTS     = 100
 FRAME_WAIT_SLEEP_S      = 0.05
 CAPTURE_INIT_SLEEP_S    = 0.5
@@ -106,7 +114,37 @@ MUTTER_STR_IF = "org.gnome.Mutter.ScreenCast.Stream"
 
 MAGIC_HELLO = b"TLHELO"
 MAGIC_OK    = b"TLOK__"
+MAGIC_OK2   = b"TLOK2_"  # MAGIC_OK, but input was negotiated. Exactly 6 bytes
+                         # like MAGIC_OK — the client reads a fixed 6-byte
+                         # header and then a fixed 9-byte (w, h, codec) struct
+                         # regardless of which magic it got, so the length and
+                         # layout of the reply must never change; only this
+                         # value differs. See the extension block below for
+                         # how a client advertises that it wants MAGIC_OK2.
 MAGIC_BUSY  = b"TLBUSY"
+
+# ── Input-capability extension (optional, appended by new clients only) ───────
+# A client that wants pointer/touch input appends this small, versioned,
+# self-describing block directly after the existing 94-byte hello:
+#
+#   offset  size  field        meaning
+#   0       4     marker       b"TLX1" — extension format version 1
+#   4       1     cap_len      u8, number of capability bytes that follow
+#   5       cap_len  capability  bitfield; bit 0 (CAP_POINTER_INPUT) = client
+#                                wants pointer input
+#
+# This is safe against every released server: they call `conn.recv(94)` once
+# and never read the client again, so these extra bytes just sit unread in
+# the kernel socket buffer and are discarded along with the connection.
+# A server that understands the extension reads the header, then reads
+# exactly `cap_len` more bytes — never more, never fewer — so nothing is
+# left over on the wire to be misread as the first input message on the
+# same connection. `cap_len` is what makes the block self-describing: a
+# future version can grow the capability payload and an older server that
+# only inspects byte 0 still consumes the whole block correctly.
+EXT_MARKER        = b"TLX1"
+EXT_HEADER_LEN     = len(EXT_MARKER) + 1  # marker + cap_len byte
+CAP_POINTER_INPUT  = 0x01
 
 FALLBACK_WIDTH  = 1920
 FALLBACK_HEIGHT = 1080
@@ -1458,6 +1496,10 @@ class ServerCore:
         self._display: Optional[MutterVirtualDisplay] = None
         self._capture: Optional[PipeWireCapture]      = None
         self._conn:    Optional[socket.socket]        = None  # active client socket
+        self._input_negotiated: bool = False  # set per-connection in
+                                               # _handle_client; whether this
+                                               # client both advertised input
+                                               # support and had it accepted
         self._broadcaster: Optional[DiscoveryBroadcaster] = None
         self._srv: Optional[socket.socket]            = None
         self._bus                                     = None
@@ -1607,6 +1649,38 @@ class ServerCore:
             return
 
         self._conn = conn  # store so _on_session_closed can abort the stream
+
+        # ── Optional input-capability extension ─────────────────────────────
+        # See the EXT_MARKER block comment near the top of this file for the
+        # wire layout. Absence is the common case today (every released
+        # client is legacy) and must be entirely non-fatal: a timeout here
+        # just means "no extension", never a dropped connection.
+        client_wants_input = False
+        conn.settimeout(EXTENSION_READ_TIMEOUT_S)
+        try:
+            ext_header = conn.recv(EXT_HEADER_LEN)
+        except (socket.timeout, OSError):
+            ext_header = b""
+        if len(ext_header) == EXT_HEADER_LEN and ext_header[:len(EXT_MARKER)] == EXT_MARKER:
+            cap_len = ext_header[len(EXT_MARKER)]
+            cap_payload = b""
+            if cap_len > 0:
+                # Read exactly the length the client declared — never more,
+                # never fewer — so nothing is left on the wire for the input
+                # reader (Task 5) to misinterpret as the first message.
+                try:
+                    cap_payload = conn.recv(cap_len)
+                except (socket.timeout, OSError):
+                    cap_payload = b""
+            if len(cap_payload) == cap_len and cap_len >= 1:
+                client_wants_input = bool(cap_payload[0] & CAP_POINTER_INPUT)
+        conn.settimeout(HANDSHAKE_TIMEOUT_S)  # restore for the rest of the handshake
+
+        # `touch_enabled` does not exist on ServerConfig yet (a later task
+        # adds the field and its UI toggle) — default to False, which is the
+        # deliberate ship default, so this negotiation works standalone.
+        touch_enabled = getattr(self._config, "touch_enabled", False)
+        self._input_negotiated = client_wants_input and touch_enabled
 
         # Explicit per-session stop signal. Capture teardown (pipeline error,
         # display reconfiguration) used to be signalled only indirectly, by
@@ -1854,8 +1928,13 @@ class ServerCore:
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
             w, h = resolve_stream_dimensions(capture)
 
-            conn.sendall(MAGIC_OK + struct.pack(">IIB", w, h, codec))
-            self._log(f"Streaming → {device_name}")
+            # Only the magic differs — the (w, h, codec) struct that follows
+            # is byte-identical either way, since the Android client reads
+            # it at a fixed offset regardless of which magic preceded it.
+            reply_magic = MAGIC_OK2 if self._input_negotiated else MAGIC_OK
+            conn.sendall(reply_magic + struct.pack(">IIB", w, h, codec))
+            self._log(f"Streaming → {device_name}"
+                      + (" (input enabled)" if self._input_negotiated else ""))
             if capture.is_inter_frame:
                 # The H.264 framerate lives in the pipeline caps, fixed when
                 # the pipeline was built, and the send loop is now driven by
