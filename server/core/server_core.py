@@ -27,6 +27,7 @@ except (ValueError, ImportError):
     GstVideo = None
 
 from .discovery import DiscoveryBroadcaster
+from server.core.profiles import ProfileStore
 from server.core.preflight import (
     H264_ENCODER_CANDIDATES,
     format_preflight,
@@ -606,6 +607,29 @@ def _encoder_runs(spec: EncoderSpec, width: int, height: int) -> bool:
             pipeline.set_state(Gst.State.NULL)
 
 
+def gstreamer_fingerprint() -> str:
+    """Identify this GStreamer installation for cache invalidation.
+
+    A cached "nvh264enc works here" is a claim about the drivers and plugins
+    present, not about the app. Upgrading GStreamer, installing a VA driver,
+    or losing access to a render node must all invalidate it — so the
+    fingerprint is the version plus exactly which candidate encoders the
+    registry can currently see.
+    """
+    try:
+        Gst.init(None)
+        present = [
+            name for name in CANDIDATES
+            if Gst.ElementFactory.find(name) is not None
+        ]
+        return f"{Gst.version_string()}|{','.join(sorted(present))}"
+    except Exception as e:
+        # An unfingerprintable environment simply never matches a stored
+        # entry, so this degrades to always probing rather than to failing.
+        log.debug("Could not fingerprint GStreamer: %s", e)
+        return "unknown"
+
+
 def select_encoder(config: EncoderConfig, width: int, height: int):
     """Pick the best encoder that actually works at this size, hardware first.
 
@@ -623,6 +647,30 @@ def select_encoder(config: EncoderConfig, width: int, height: int):
            config.low_latency, width, height)
     if key in _ENCODER_CACHE:
         return _ENCODER_CACHE[key]
+
+    fingerprint = gstreamer_fingerprint()
+    store = ProfileStore()
+    store.load()
+    cached = store.get_encoder(fingerprint)
+    if cached:
+        spec = EncoderSpec(
+            element=cached.get("element", ""),
+            is_hardware=bool(cached.get("is_hardware")),
+            rate_control=cached.get("rate_control", ""),
+            props=dict(cached.get("props") or {}),
+        )
+        # Trust but verify: a cached encoder that no longer works — a GPU in
+        # use by another session, a driver that loaded differently — must not
+        # break the stream. Re-running it is far cheaper than the full probe.
+        if spec.element and _encoder_runs(spec, width, height):
+            log.info("Encoder from cache: %s (%s, rate-control=%s)",
+                     spec.element,
+                     "hardware" if spec.is_hardware else "software",
+                     spec.rate_control)
+            _ENCODER_CACHE[key] = spec
+            return spec
+        log.info("Cached encoder %s no longer usable — re-probing",
+                 spec.element)
 
     chosen = None
     for element in CANDIDATES:
@@ -667,6 +715,13 @@ def select_encoder(config: EncoderConfig, width: int, height: int):
     # len(CANDIDATES) * 5s, not unbounded — do not raise that timeout.
     if chosen is not None:
         _ENCODER_CACHE[key] = chosen
+        store.set_encoder(fingerprint, {
+            "element": chosen.element,
+            "is_hardware": chosen.is_hardware,
+            "rate_control": chosen.rate_control,
+            "props": chosen.props,
+        })
+        store.save()
     return chosen
 
 
