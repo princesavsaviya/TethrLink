@@ -105,7 +105,7 @@ capabilities. There is no mechanism to recover from corruption.
 | **Keep H.264; do not adopt H.265** | Bandwidth is not the constraint (USB-C gives 100–300 Mbit/s; 1080p60 needs 30–50). H.265 costs latency, has far narrower encoder coverage (Intel exposed *zero* HEVC encoders on the dev machine vs two for H.264), requires rewriting the fragile NAL parsing (2-byte headers, VPS/SPS/PPS), is not CDD-mandatory on Android, and carries a messier patent position for a Play Store product. |
 | **Vendor-neutral encoder selection** | No hardcoded vendor element. Runtime probe + fallback chain. Plugin presence ≠ working encoder. |
 | **GNOME-first capture; preserve backend seam** | No cross-compositor standard exists for *creating* a virtual output. EVDI would be universal but costs a DKMS kernel module (Secure Boot, kernel upgrades, root install) — support burden outweighs coverage at this stage. GNOME covers Ubuntu/Fedora/Debian/Pop!_OS defaults; existing X11 path covers more. |
-| **Match device geometry exactly; zero resampling** | Largest available quality win. |
+| ~~**Match device geometry exactly; zero resampling**~~ — **superseded 2026-08-18, see §12** | Largest available quality win. |
 | **Logical-size-matched scaling (not pixel-matched)** — *confirmed* | Pixel-matching a 1080×2400 panel at scale 1 makes desktop UI physically microscopic on a phone. Real HiDPI monitors use a scale factor. Derive scale from reported DPI so content renders at full pixel density but at a readable physical size. |
 | **Codec-agnostic negotiation layer** | H.265/AV1 slot in later without rework if 4K or Wi-Fi transport ever makes bandwidth the constraint. Build the seam, not the feature. |
 
@@ -341,3 +341,48 @@ path across SoCs.
 
 Because step 5 recreates the pipeline, the first frame after a rotation is
 necessarily an IDR — no additional keyframe request is needed.
+
+## 12. Edge-aligned geometry — supersedes "match device exactly" (2026-08-18)
+
+Hardware testing overturned the §3 decision to match the device's dimensions
+exactly. Matching a 2960×1848 tablet produced three problems at once:
+
+1. **Decode cost.** ~164 Mpx/s at 30 fps sits near the practical ceiling for a
+   single H.264 stream. The tablet fell behind, and because the pipeline never
+   drops an encoded frame, latency accumulated rather than degrading.
+2. **Broken edge traversal.** GNOME shares only the vertically overlapping part
+   of an edge between two monitors. An 1848-tall virtual display beside a
+   1080-tall laptop panel left 768px of that edge untraversable — the pointer
+   hit an invisible wall.
+3. **Unreadable UI.** 2960×1848 on a 14.6" panel is ~239 PPI, so a 1:1 desktop
+   is physically tiny. Fixing that needs a Mutter scale factor, which rewrites
+   the user's display layout and remains out of scope.
+
+Matching the *host* instead fixes all three, but the host is 16:9 while the
+tablet is 16:10, and the H.264 path renders through MediaCodec into a
+full-screen SurfaceView with no aspect correction — so a 16:9 stream is
+stretched ~11% vertically. Confirmed visually on hardware.
+
+**The rule adopted instead — take the height from the host, the aspect from
+the device:**
+
+```
+target_height = min(monitor_height, device_height)
+target_width  = round(target_height × (device_width / device_height))
+```
+
+- Height from the host makes the shared edge fully traversable.
+- Aspect from the device means nothing is stretched, and the upscale is
+  uniform in both axes instead of 1.54× horizontally against 1.71× vertically.
+- `min(...)` never requests more pixels than the panel physically has, so a 4K
+  host driving this tablet still tops out at the tablet's own height.
+
+Worked examples: host 1920×1080 + device 2960×1848 → **1730×1080** (the
+configuration the user tested and preferred). Host 3840×2160 + the same device
+→ 2960×1848. Host 1920×1080 + a 1280×800 device → 1280×800.
+
+The aspect must be computed from the *portrait-normalised* device dimensions,
+since the client locks to landscape while streaming.
+
+Explicit configuration (including `TETHRLINK_RES`) still overrides the
+derivation entirely.
