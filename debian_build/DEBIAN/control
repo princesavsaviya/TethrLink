@@ -1,0 +1,13 @@
+Package: tethrlink
+Version: 2.0.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3, python3-gi, python3-pil, gir1.2-gtk-4.0, gir1.2-adw-1, gir1.2-ayatanaappindicator3-0.1, gir1.2-gstreamer-1.0, gstreamer1.0-pipewire, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-ugly
+Recommends: gstreamer1.0-plugins-bad, gstreamer1.0-vaapi
+Conflicts: python3-tethrlink
+Replaces: python3-tethrlink
+Maintainer: Prince Savsaviya <princesavsaviya2023.learning@gmail.com>
+Description: Wired Second Monitor via USB Tethering
+ TethrLink turns an Android tablet into a wired second monitor for your Linux PC using USB tethering.
+ It provides a GTK4 interface for managing the connection and streaming.
