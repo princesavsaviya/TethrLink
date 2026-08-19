@@ -127,6 +127,14 @@ residual is deliberate re-verification.
 
 ## Transport
 
+- **The tether subnet is NOT 192.168.42.0/24 on this machine.** The README
+  claims it is (the AOSP default); the real interface is `enx7a6c143e84e9` at
+  **10.125.32.0/24**. Hardcoding the README's value broke connection and
+  discovery outright. The server now derives the link at runtime from
+  **USB-attached interfaces** — `/sys/class/net/<iface>/device` resolves to a
+  path containing `usb`. That is the product's real intent ("serve what is on
+  the other end of the cable") and works on any ROM. Wi-Fi and docker are
+  still refused because they are not USB.
 - The tablet enumerates on **USB 2.0 High Speed: 480 Mbit/s nominal**,
   ~200–300 Mbit/s realistic. It is *not* on the 10 Gbit/s controller.
 - **Raw video is not viable:** NV12 at 2960×1848/30 is ~1.9 Gbit/s, several
