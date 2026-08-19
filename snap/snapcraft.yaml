@@ -4,19 +4,31 @@ base: core24
 version: '2.0.0'
 summary: Turn your Android tablet into a wired second monitor for Linux.
 description: |
-  TethrLink streams a virtual display from your Linux PC to an Android tablet 
-  over a direct USB tethering connection — no Wi-Fi, no cloud, no latency spikes. 
-  
-  The PC captures a dedicated virtual screen via the Mutter ScreenCast D-Bus API, 
-  encodes frames with GStreamer (JPEG or H.264), and pushes them over a private 
-  USB subnet. The Android client decodes and renders them fullscreen in real time.
-  
+  TethrLink turns an Android tablet into a real second monitor for your Linux
+  PC — not a mirror of a screen you already have — over a direct USB
+  connection. No Wi-Fi, no router, no cloud, no account.
+
+  The PC asks GNOME to create a dedicated virtual display, captures it through
+  PipeWire, encodes it with hardware H.264 (or JPEG), and streams it down the
+  cable. Windows you drag onto the tablet stay there, and GNOME arranges it
+  like any other monitor.
+
+  New in 2.0.0 — touch input. Tap to click, drag to drag, long press to
+  right-click, two-finger drag to scroll. Touch is off by default; you enable
+  it in the server window.
+
   Features:
+  • A real second display, not a screen mirror
+  • Touch input driving your pointer (opt-in)
   • Zero-config transport — USB tethering, no router needed
-  • Independent virtual display
-  • Dual codec — software JPEG or GStreamer H.264
-  • GTK4 + Libadwaita dark desktop UI
-  • UDP auto-discovery
+  • Hardware H.264 via NVENC, VA-API or QSV, with a JPEG fallback
+  • Display size derived from your monitor and the tablet's aspect ratio
+  • UDP auto-discovery — no IP address to type
+  • GTK4 + Libadwaita desktop app
+
+  Requires GNOME on Wayland. X11 sessions fall back to JPEG, video only.
+  Serves only devices on a USB-attached interface; Wi-Fi and container
+  bridges are refused.
 
 # The icon goes here at the root level!
 icon: debian_build/usr/share/icons/hicolor/512x512/apps/tethrlink.png
@@ -25,7 +37,11 @@ icon: debian_build/usr/share/icons/hicolor/512x512/apps/tethrlink.png
 license: GPL-3.0
 contact: princesavsaviya2023.learning@gmail.com
 source-code: https://github.com/princesavsaviya/TethrLink
+issues: https://github.com/princesavsaviya/TethrLink/issues
 website: https://princesavsaviya.github.io/TethrLink
+
+platforms:
+  amd64:
 
 grade: stable
 confinement: strict
