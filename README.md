@@ -47,7 +47,20 @@ virtual display — see [Touch input](#touch-input).
 
 ## Installation
 
-### From source (recommended for 1.1.0)
+### Debian/Ubuntu package (.deb)
+
+```bash
+git clone https://github.com/princesavsaviya/TethrLink.git
+cd TethrLink
+./build_deb.sh
+sudo apt install ./tethrlink_2.0.0_all.deb
+```
+
+There's no hosted release yet, so you build the package locally — `build_deb.sh` copies the current `server/` source tree and pulls in `mss`/`qrcode[pil]` via pip; `apt` then resolves the GStreamer, GTK4 and Libadwaita dependencies declared in the package. This installs a `tethrlink` launcher, a desktop entry, and an icon, all via normal `apt`/`dpkg` mechanisms (`sudo apt remove tethrlink` to uninstall).
+
+This path was broken for the 1.1.0 and 2.0.0 releases — the packaged code had silently drifted from source — and has just been fixed. It's been verified by inspecting the built package's contents (every module present, matching source byte-for-byte) but hasn't seen the same real-world mileage as the from-source path below. If something looks off, from-source is the fallback.
+
+### From source
 
 ```bash
 sudo apt install python3-gi python3-dbus \
