@@ -61,3 +61,7 @@ stage/
 
 # ── Miscellaneous ─────────────────────────────────────────────────────────────
 android/tethrlink-release-backup.zip
+
+# Build artifacts
+*.apk
+*.snap
