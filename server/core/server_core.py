@@ -38,7 +38,13 @@ from server.core.preflight import (
 from server.core.frame_queue import EncodedFrameQueue, LatestFrameSlot
 from server.core.geometry import is_plausible_size, resolve_capture_size
 from server.core.metrics import StreamMetrics
-from server.core.remote_input import RemoteInput
+from server.core.remote_input import (
+    RemoteInput,
+    RD_BUS,
+    RD_PATH,
+    RD_SES_IF,
+    dispose_remote_desktop_session,
+)
 from server.core.input_protocol import (
     InputMessage,
     MSG_POINTER_AXIS,
@@ -297,15 +303,25 @@ def dispatch_input_message(msg: InputMessage, remote_input: RemoteInput,
 
     `allow_rate_limited` gates motion, axis, and button-*press* events —
     call sites pass the flood limiter here, and a False consults counts
-    as dropped. A button *release* is always forwarded regardless of what
-    it says: dropping a press just means nothing happens on the OS side,
-    but dropping a release for a button RemoteInput already believes is
-    held would leave it stuck down until the connection ends — the single
-    worst failure mode this feature has (see remote_input.py's module
-    docstring) — so releases are deliberately exempt from the flood
-    limiter. The default no-op limiter (always allow) is what makes this
-    function usable standalone in tests that aren't exercising rate
-    limiting at all.
+    as dropped. A button *release* never consults it at all and is
+    always forwarded on to RemoteInput.button(): dropping a press just
+    means nothing happens on the OS side, but dropping a release for a
+    button RemoteInput already believes is held would leave it stuck
+    down until the connection ends — the single worst failure mode this
+    feature has (see remote_input.py's module docstring) — so releases
+    are deliberately exempt from the flood limiter. The default no-op
+    limiter (always allow) is what makes this function usable standalone
+    in tests that aren't exercising rate limiting at all.
+
+    That exemption alone would let a flood of releases reach D-Bus
+    completely unthrottled, though — RemoteInput.button() is what
+    actually bounds it: a release for a code it does not believe is held
+    is a no-op there, and its return value tells us so, which is what
+    gets counted as dropped below. Every *meaningful* release (for a
+    button genuinely held) still gets through unthrottled, exactly as
+    intended; only a no-op release is discarded, and at most a handful of
+    buttons can be held at once, so a flood of the rest is naturally
+    bounded without ever risking a stuck button.
 
     Never raises: RemoteInput's own methods are exception-safe by
     contract, and every decode_* helper here returns None rather than
@@ -326,7 +342,14 @@ def dispatch_input_message(msg: InputMessage, remote_input: RemoteInput,
         if pressed and not allow_rate_limited():
             metrics.incr("input_events_dropped")
             return
-        remote_input.button(code, pressed)
+        # button() itself decides whether a release is meaningful — see
+        # this function's docstring above. A False return means it was
+        # discarded as a no-op (a release for a code not currently held),
+        # which is counted as dropped the same as every other drop on
+        # this path; a True return covers both a press and a genuine
+        # release, neither of which is a drop.
+        if not remote_input.button(code, pressed):
+            metrics.incr("input_events_dropped")
     elif msg.type == MSG_POINTER_AXIS:
         decoded = decode_axis(msg.payload)
         if decoded is None or not allow_rate_limited():
@@ -593,23 +616,71 @@ def detect_session_type() -> str:
 
 # ── Mutter virtual display ────────────────────────────────────────────────────
 
-def cleanup_orphaned_sessions(bus):
+def _sweep_session_tree(bus, service_name: str, base_path: str,
+                         session_iface: str,
+                         dispose: Optional[Callable] = None) -> None:
+    """Enumerate live session objects under `base_path` on `service_name`
+    and tear each one down.
+
+    Exception-safe at two levels, deliberately: the whole sweep is
+    wrapped (a bus with nothing listening at `base_path`, or a session
+    tree that fails to introspect, must not raise — cleanup that raises
+    would be worse than the leak it exists to fix), and each discovered
+    node is torn down independently, in its own try/except, so one
+    session that refuses to die can't stop the rest of the sweep from
+    running.
+
+    `dispose`, when given, replaces the bare `Stop()` call used for
+    ScreenCast sessions below. RemoteDesktop sessions need
+    dispose_remote_desktop_session()'s more thorough Start()-then-Stop()
+    fallback (see its docstring in remote_input.py): a session that was
+    created but never started rejects a bare Stop() and, left at that,
+    never actually leaves the bus.
+    """
     try:
-        sc_obj = bus.get_object(MUTTER_BUS, MUTTER_PATH)
-        intro  = dbus.Interface(sc_obj, "org.freedesktop.DBus.Introspectable")
+        obj   = bus.get_object(service_name, base_path)
+        intro = dbus.Interface(obj, "org.freedesktop.DBus.Introspectable")
         import defusedxml.ElementTree as ET
         root = ET.fromstring(intro.Introspect())
         for node in root.findall("node"):
             name = node.get("name", "")
-            if name:
-                try:
-                    obj = bus.get_object(MUTTER_BUS, f"{MUTTER_PATH}/{name}")
-                    dbus.Interface(obj, MUTTER_SES_IF).Stop()
+            if not name:
+                continue
+            try:
+                session_obj = bus.get_object(service_name, f"{base_path}/{name}")
+                session = dbus.Interface(session_obj, session_iface)
+                if dispose is not None:
+                    ok = dispose(session)
+                else:
+                    session.Stop()
+                    ok = True
+                if ok:
                     log.info("Cleaned orphaned session: %s", name)
-                except Exception:
-                    pass
+                else:
+                    log.debug("Orphaned session %s did not dispose", name)
+            except Exception as e:
+                log.debug("Could not clean orphaned session %s: %s", name, e)
     except Exception as e:
-        log.debug("Session cleanup: %s", e)
+        log.debug("Session cleanup at %s: %s", base_path, e)
+
+
+def cleanup_orphaned_sessions(bus):
+    """Sweep leftover ScreenCast AND RemoteDesktop sessions from a
+    previous run.
+
+    Two independent object trees, so two independent sweeps.
+    RemoteDesktop sessions (Task 5's input pairing, created by
+    RemoteInput.create()) live entirely under RD_PATH and are never
+    returned by introspecting MUTTER_PATH — without this second sweep, a
+    RemoteDesktop session orphaned by a run that never got the chance to
+    tear it down itself (a crash, a kill -9, or simply a connection that
+    hit MutterVirtualDisplay.setup()'s paired-failure path before that
+    path's own immediate teardown was added) would persist on the bus
+    forever instead of being cleaned up the next time a client connects.
+    """
+    _sweep_session_tree(bus, MUTTER_BUS, MUTTER_PATH, MUTTER_SES_IF)
+    _sweep_session_tree(bus, RD_BUS, RD_PATH, RD_SES_IF,
+                         dispose=dispose_remote_desktop_session)
 
 
 class MutterVirtualDisplay:
@@ -675,49 +746,79 @@ class MutterVirtualDisplay:
                 log.debug("CreateSession with disable-notifications failed (%s), retrying plain", e)
         self._paired = bool(pairing_props)
 
-        session_obj = self._bus.get_object(MUTTER_BUS, self._session_path)
-        session     = dbus.Interface(session_obj, MUTTER_SES_IF)
+        # Everything from here through the loop run is wrapped: once
+        # CreateSession above has succeeded, a paired session means
+        # RemoteInput.create() already created a RemoteDesktop session on
+        # the bus too (before this object even existed — see
+        # ServerCore._handle_client). If RecordVirtual raises, the setup
+        # timeout fires, or the ScreenCast session gets closed out from
+        # under us before the PipeWire stream ever shows up, Start() on
+        # that RemoteDesktop session is never reached — and it must not
+        # be left dangling on the bus for cleanup_orphaned_sessions() to
+        # maybe find on some later run when it can be disposed right now
+        # instead. See the except block below.
+        try:
+            session_obj = self._bus.get_object(MUTTER_BUS, self._session_path)
+            session     = dbus.Interface(session_obj, MUTTER_SES_IF)
 
-        def _on_closed():
-            if self._in_setup:
-                setattr(self, "_error", "Session closed during setup")
-                self._loop.quit()
-            elif self.on_closed:
+            def _on_closed():
+                if self._in_setup:
+                    setattr(self, "_error", "Session closed during setup")
+                    self._loop.quit()
+                elif self.on_closed:
+                    try:
+                        self.on_closed()
+                    except Exception:
+                        log.exception("on_closed callback raised")
+
+            session_obj.connect_to_signal("Closed", _on_closed, dbus_interface=MUTTER_SES_IF)
+
+            stream_path = str(session.RecordVirtual(
+                dbus.Dictionary({"cursor-mode": dbus.UInt32(1)}, signature="sv")
+            ))
+            self._stream_path = stream_path
+            stream_obj = self._bus.get_object(MUTTER_BUS, stream_path)
+            stream_obj.connect_to_signal("PipeWireStreamAdded",
+                lambda node_id: (setattr(self, "_node_id", int(node_id)),
+                                 log.info("PipeWire node: %d", int(node_id)),
+                                 self._loop.quit()),
+                dbus_interface=MUTTER_STR_IF)
+
+            if self._paired:
+                # Paired: only the RemoteDesktop session's own Start() may be
+                # called (see __init__'s docstring note) — it drives this
+                # ScreenCast session too. bind_stream() first so the pointer
+                # methods have a valid stream the instant the session comes up.
+                self._remote_input.bind_stream(stream_path)
+                self._remote_input.start()
+            else:
+                session.Start()
+
+            GLib.timeout_add(MUTTER_SETUP_TIMEOUT_MS, lambda: (
+                setattr(self, "_error", "Timeout"), self._loop.quit()
+            ))
+            self._loop.run()
+            self._in_setup = False
+            if self._error:
+                raise RuntimeError(self._error)
+        except Exception:
+            self._in_setup = False
+            if self._paired and self._remote_input is not None:
+                # Tear down the paired RemoteDesktop session immediately,
+                # rather than counting on the caller to do it (it does —
+                # see ServerCore._handle_client — but this class should
+                # not depend on that). remote_input.stop() is exception-
+                # safe end-to-end on its own (it routes through
+                # dispose_remote_desktop_session(), which specifically
+                # handles a session that was created but never started —
+                # see remote_input.py), but it is wrapped again here
+                # anyway: a cleanup attempt raising out of an exception
+                # handler would replace this failure with a worse one.
                 try:
-                    self.on_closed()
+                    self._remote_input.stop()
                 except Exception:
-                    log.exception("on_closed callback raised")
-
-        session_obj.connect_to_signal("Closed", _on_closed, dbus_interface=MUTTER_SES_IF)
-
-        stream_path = str(session.RecordVirtual(
-            dbus.Dictionary({"cursor-mode": dbus.UInt32(1)}, signature="sv")
-        ))
-        self._stream_path = stream_path
-        stream_obj = self._bus.get_object(MUTTER_BUS, stream_path)
-        stream_obj.connect_to_signal("PipeWireStreamAdded",
-            lambda node_id: (setattr(self, "_node_id", int(node_id)),
-                             log.info("PipeWire node: %d", int(node_id)),
-                             self._loop.quit()),
-            dbus_interface=MUTTER_STR_IF)
-
-        if self._paired:
-            # Paired: only the RemoteDesktop session's own Start() may be
-            # called (see __init__'s docstring note) — it drives this
-            # ScreenCast session too. bind_stream() first so the pointer
-            # methods have a valid stream the instant the session comes up.
-            self._remote_input.bind_stream(stream_path)
-            self._remote_input.start()
-        else:
-            session.Start()
-
-        GLib.timeout_add(MUTTER_SETUP_TIMEOUT_MS, lambda: (
-            setattr(self, "_error", "Timeout"), self._loop.quit()
-        ))
-        self._loop.run()
-        self._in_setup = False
-        if self._error:
-            raise RuntimeError(self._error)
+                    pass
+            raise
         return self._node_id
 
     def close(self):

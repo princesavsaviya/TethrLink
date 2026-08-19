@@ -30,6 +30,7 @@ from server.core.input_protocol import (
     MSG_POINTER_MOTION,
 )
 from server.core.metrics import StreamMetrics
+from server.core.remote_input import RemoteInput
 from server.core.server_core import (
     INPUT_BUFFER_CAP_BYTES,
     accumulate_input_buffer,
@@ -42,7 +43,16 @@ class _FakeRemoteInput:
     """Records calls in place of a live RemoteInput. No D-Bus involved —
     same spirit as test_remote_input.py's _FakeSession, one level up the
     stack: this stands in for the whole RemoteInput object, not just the
-    D-Bus session it wraps."""
+    D-Bus session it wraps.
+
+    button() always "dispatches" (returns True) — this fake does not
+    model RemoteInput's own held-button state, so it can't reproduce the
+    real no-op-for-an-unheld-release behaviour that RemoteInput.button()
+    now implements (see remote_input.py). That behaviour, and the drop
+    accounting dispatch_input_message derives from it, is covered against
+    the REAL RemoteInput class in test_remote_input.py and in this file's
+    "unmatched-release flood" tests below, which build a real RemoteInput
+    bound to a fake D-Bus session rather than using this fake."""
 
     def __init__(self):
         self.moves = []
@@ -55,6 +65,7 @@ class _FakeRemoteInput:
 
     def button(self, code, pressed):
         self.buttons.append((code, pressed))
+        return True
 
     def axis(self, dx, dy):
         self.axes.append((dx, dy))
@@ -153,6 +164,38 @@ def test_dispatch_never_rate_limits_a_button_release():
         fake, metrics, allow_rate_limited=lambda: False,
     )
     assert fake.buttons == [(0x110, False)]
+    assert metrics.snapshot()["input_events_dropped"] == 0
+
+
+def test_dispatch_counts_a_noop_release_as_dropped():
+    """RemoteInput.button() reports a no-op release (one for a code it
+    does not believe is held) by returning False — see remote_input.py.
+    dispatch_input_message must turn that into an input_events_dropped
+    count, exactly like every other kind of drop on this path, even
+    though the release was never rate-limited and did reach button()."""
+    class _NoopButton(_FakeRemoteInput):
+        def button(self, code, pressed):
+            self.buttons.append((code, pressed))
+            return False  # simulates RemoteInput's no-op-release case
+
+    fake, metrics = _NoopButton(), StreamMetrics()
+    dispatch_input_message(
+        InputMessage(type=MSG_POINTER_BUTTON, payload=bytes([0, 0])),  # release
+        fake, metrics,
+    )
+    assert fake.buttons == [(0x110, False)]  # still reached button()
+    assert metrics.snapshot()["input_events_dropped"] == 1
+
+
+def test_dispatch_does_not_count_a_dispatched_button_as_dropped():
+    """The mirror of the previous test: when button() returns True (a
+    press, or a genuine release), nothing is counted as dropped."""
+    fake, metrics = _FakeRemoteInput(), StreamMetrics()
+    dispatch_input_message(
+        InputMessage(type=MSG_POINTER_BUTTON, payload=bytes([0, 1])),  # press
+        fake, metrics,
+    )
+    assert fake.buttons == [(0x110, True)]
     assert metrics.snapshot()["input_events_dropped"] == 0
 
 
@@ -339,6 +382,61 @@ def test_run_input_reader_never_rate_limits_a_flood_of_button_releases(sock_pair
     assert snap["input_events_received"] == n
     assert snap["input_events_dropped"] == 0
     assert len(fake.buttons) == n
+
+
+class _FakeRDSession:
+    """Stands in for a live org.gnome.Mutter.RemoteDesktop.Session, same
+    spirit as test_remote_input.py's _FakeSession — records the button
+    calls that actually made it all the way to "D-Bus"."""
+
+    def __init__(self):
+        self.buttons = []
+
+    def NotifyPointerButton(self, code, pressed):
+        self.buttons.append((code, pressed))
+
+    def NotifyPointerMotionAbsolute(self, stream_path, x, y):
+        pass
+
+
+def test_run_input_reader_unmatched_release_flood_never_reaches_dbus(sock_pair):
+    """End-to-end version of the fix: this uses a REAL RemoteInput (bound
+    directly to a fake D-Bus session, bypassing create()/bind_stream())
+    instead of the plumbing-only _FakeRemoteInput used elsewhere in this
+    file, specifically to prove the actual held-button state check in
+    RemoteInput.button() is what bounds a release flood — not the rate
+    limiter, which is explicitly NOT allowed to gate releases (see
+    dispatch_input_message's docstring: rate-limiting a release would
+    reintroduce the stuck-button risk it was designed to avoid).
+
+    A flood of releases for a button that was never pressed must still
+    all reach the reader (received == n) and all reach RemoteInput.button()
+    (which is where the no-op decision is made), but none of them may
+    reach the underlying D-Bus session, and every one must be counted
+    under input_events_dropped.
+    """
+    server_sock, client_sock = sock_pair
+    metrics, stop = StreamMetrics(), threading.Event()
+
+    ri = RemoteInput(100, 100, bus=object())
+    session = _FakeRDSession()
+    ri._session = session
+    ri._stream_path = "/fake/stream"
+
+    n = 2000
+    blob = b"".join(_button(0, False) for _ in range(n))
+
+    t = _run_reader(server_sock, ri, metrics, stop)
+    client_sock.sendall(blob)
+    time.sleep(0.5)
+    client_sock.close()
+    t.join(timeout=5.0)
+
+    assert not t.is_alive()
+    snap = metrics.snapshot()
+    assert snap["input_events_received"] == n
+    assert snap["input_events_dropped"] == n
+    assert session.buttons == []  # none of the 2000 ever reached "D-Bus"
 
 
 def test_run_input_reader_exits_promptly_when_told_to_stop(sock_pair):

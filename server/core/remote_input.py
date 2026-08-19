@@ -46,6 +46,52 @@ PROPS_IF  = "org.freedesktop.DBus.Properties"
 DEFAULT_FRAME_INTERVAL_S = 1.0 / 30
 
 
+def dispose_remote_desktop_session(session) -> bool:
+    """Best-effort teardown of a RemoteDesktop session that may have been
+    created but never started.
+
+    Stop() is this interface's only teardown method, but Mutter rejects
+    it — "Session not started" — on a session that was created via
+    RemoteDesktop.CreateSession and never had Start() called on it, and
+    critically that rejection does not unregister the session from the
+    bus: it stays alive there, invisible except by enumerating sessions.
+    This is exactly the state a paired MutterVirtualDisplay.setup() (in
+    server_core.py) can leave behind: CreateSession (the RemoteDesktop
+    side, done earlier by create() below) succeeds, but a later step —
+    RecordVirtual, the setup timeout, or the session getting closed out
+    from under it — fails before Start() is ever reached.
+
+    The only way observed to actually release such a session is to run
+    it through its real lifecycle: Start() it, then Stop() it. Both of
+    those, and the initial bare Stop() attempt, are each individually
+    best-effort — nothing here is ever allowed to raise, since a
+    disposal helper that raises is strictly worse than the leak it
+    exists to fix. Every caller (create()'s own failure path, stop(),
+    and cleanup_orphaned_sessions()'s RemoteDesktop sweep in
+    server_core.py) depends on that guarantee.
+
+    Returns True if a Stop() call is believed to have succeeded (either
+    the first bare attempt, or the Start()-then-Stop() fallback), False
+    if every attempt failed. Purely informational for the benefit of a
+    caller that wants to log accurately — nothing here needs to act on
+    it, since every path is already best-effort regardless of outcome.
+    """
+    try:
+        session.Stop()
+        return True
+    except Exception:
+        pass
+    try:
+        session.Start()
+    except Exception:
+        pass
+    try:
+        session.Stop()
+        return True
+    except Exception:
+        return False
+
+
 class RemoteInput:
     """Binds one Mutter RemoteDesktop session and drives the pointer on the
     paired ScreenCast stream's own coordinate space.
@@ -124,12 +170,14 @@ class RemoteInput:
             self._session = None
             # CreateSession may have already succeeded on the bus even
             # though a later step (reading SessionId) failed — best-effort
-            # avoid leaving an orphaned, never-started session behind.
-            # Stop() on one raises "Session not started", which is exactly
-            # the expected/swallowed case here.
+            # avoid leaving an orphaned, never-started session behind. See
+            # dispose_remote_desktop_session() above for why a bare Stop()
+            # is not enough on its own to actually get rid of one.
             if session_obj is not None:
                 try:
-                    dbus.Interface(session_obj, RD_SES_IF).Stop()
+                    dispose_remote_desktop_session(
+                        dbus.Interface(session_obj, RD_SES_IF)
+                    )
                 except Exception:
                     pass
             return None
@@ -215,26 +263,52 @@ class RemoteInput:
         except Exception as e:
             log.debug("RemoteInput.move dropped (flush): %s", e)
 
-    def button(self, code: int, pressed: bool) -> None:
+    def button(self, code: int, pressed: bool) -> bool:
         """Notify a pointer button edge. Never coalesced — a click is a
         discrete event, not a stream of redundant samples.
 
-        Flushes any pending coalesced motion first (see
-        _flush_pending_motion()), and tracks which button codes are
-        logically held so release_all() can recover from a dropped or
-        missing release rather than leaving a button stuck down.
+        A release for a code this module does not currently believe is
+        held is a no-op: there is nothing to release, so forwarding it
+        would be pure noise. This is what actually bounds a flood of
+        button-release messages — the reader deliberately never
+        rate-limits releases (a dropped *meaningful* release would leave
+        a button stuck down, the worst failure mode this feature has —
+        see server_core.py's dispatch_input_message), so without this
+        check every release in such a flood would reach D-Bus
+        unthrottled. With it, only genuinely-held releases ever get
+        that far, and at most a handful of buttons can be held at once.
+
+        A press, or a release for a code that IS held, is never subject
+        to this or any other gate: it flushes any pending coalesced
+        motion first (see _flush_pending_motion()), updates the held set,
+        and is dispatched — exactly as before.
+
+        release_all() does not call this method at all — it drives the
+        held set and the D-Bus session directly — so it is unaffected by
+        this no-op rule and still releases everything genuinely held
+        regardless of it.
+
+        Returns True if the edge was meaningful and dispatch was
+        attempted (regardless of whether the D-Bus call itself
+        succeeded — that failure mode is logged and swallowed, same as
+        every other method here), False if it was discarded as a no-op
+        release. Callers that want to count discarded releases (see
+        dispatch_input_message) can do so from this return value.
         """
+        if not pressed and code not in self._held_buttons:
+            return False
         self._flush_pending_motion()
         if pressed:
             self._held_buttons.add(code)
         else:
             self._held_buttons.discard(code)
         if self._session is None:
-            return
+            return True
         try:
             self._session.NotifyPointerButton(code, pressed)
         except Exception as e:
             log.debug("RemoteInput.button dropped: %s", e)
+        return True
 
     def release_all(self) -> None:
         """Release every button this module believes is currently held,
@@ -269,9 +343,13 @@ class RemoteInput:
 
     def stop(self) -> None:
         """Stop the session. Safe to call twice, and safe to call on a
-        session that was never started — Mutter raises
-        org.freedesktop.DBus.Error.Failed: Session not started in that
-        case, which is expected and swallowed here, not exceptional.
+        session that was created but never started — Mutter rejects a
+        bare Stop() in that case ("Session not started") and, left at
+        that, never actually disposes the session either.
+        dispose_remote_desktop_session() (module-level, above) is what
+        handles that: it falls back to Start()-then-Stop() so the
+        session is actually released rather than merely forgotten about
+        on our end while it lingers on the bus.
 
         Also flushes any pending coalesced motion and releases every held
         button first, so a session never ends with a stale pointer
@@ -282,7 +360,7 @@ class RemoteInput:
         if self._session is None:
             return
         try:
-            self._session.Stop()
+            dispose_remote_desktop_session(self._session)
         except Exception as e:
             log.debug("RemoteInput.stop: %s", e)
         finally:

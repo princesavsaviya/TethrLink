@@ -192,3 +192,186 @@ def test_stop_is_safe_to_call_twice():
     session.buttons.clear()
     ri.stop()  # session is now None; must not raise, must not re-release
     assert session.buttons == []
+
+
+# ── Finding 2 (review): a release for an unheld button is a no-op ──────────
+#
+# Button releases are exempt from the reader's flood limiter (a dropped
+# *meaningful* release leaves a button stuck down — the worst failure mode
+# this feature has). That exemption alone would let a flood of releases
+# reach D-Bus completely unthrottled. button() is what actually bounds
+# that: a release for a code it does not believe is held is discarded as a
+# no-op, reported via its return value, before it ever reaches the D-Bus
+# session or touches the held-button state.
+
+def test_release_of_never_held_button_is_a_noop():
+    ri, session = _bound()
+    result = ri.button(0, False)  # no prior press
+    assert result is False
+    assert session.buttons == []
+    assert ri._held_buttons == set()
+
+
+def test_press_then_release_still_dispatches_both():
+    ri, session = _bound()
+    pressed = ri.button(0, True)
+    released = ri.button(0, False)
+    assert (pressed, released) == (True, True)
+    assert session.buttons == [(0, True), (0, False)]
+    assert ri._held_buttons == set()
+
+
+def test_press_returns_true_even_with_no_session_bound():
+    """button() reports whether the edge was meaningful, independent of
+    whether a D-Bus session exists to receive it — dispatch_input_message
+    (server_core.py) relies on this to distinguish a real drop from a
+    press/genuine-release that merely has nowhere to go."""
+    ri = RemoteInput(100, 100, bus=_FakeBus())  # no _session bound at all
+    assert ri.button(5, True) is True
+    assert ri.button(5, False) is True  # genuine release: was held
+
+
+def test_release_all_after_several_presses_releases_exactly_those_buttons():
+    ri, session = _bound()
+    for code in (0, 1, 2):
+        ri.button(code, True)
+    session.buttons.clear()
+    ri.release_all()
+    assert sorted(session.buttons) == [(0, False), (1, False), (2, False)]
+    assert ri._held_buttons == set()
+
+
+def test_flood_of_unmatched_releases_dispatches_nothing():
+    ri, session = _bound()
+    for _ in range(2000):
+        result = ri.button(7, False)  # never pressed
+        assert result is False
+    assert session.buttons == []
+    assert ri._held_buttons == set()
+
+
+def test_flood_of_unmatched_releases_does_not_disturb_a_genuinely_held_button():
+    """A flood of no-op releases for OTHER codes must not affect a button
+    that genuinely is held — release_all() must still recover it."""
+    ri, session = _bound()
+    ri.button(3, True)
+    for _ in range(500):
+        ri.button(9, False)  # unrelated, never held, always a no-op
+    session.buttons.clear()
+    ri.release_all()
+    assert session.buttons == [(3, False)]
+    assert ri._held_buttons == set()
+
+
+# ── Finding 1 (review): disposing a RemoteDesktop session created but ──────
+# never started (pairing-failure path can otherwise orphan it)
+
+class _NeverStartedThenDisposableSession:
+    """Simulates Mutter's real RemoteDesktop.Session behaviour for a
+    session that was created (via CreateSession) but never Start()ed:
+    Stop() raises "Session not started" until Start() has actually run,
+    after which Stop() succeeds. This is the exact scenario
+    dispose_remote_desktop_session() exists to handle — see its docstring
+    in remote_input.py."""
+
+    def __init__(self):
+        self.started = False
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def Start(self):
+        self.start_calls += 1
+        self.started = True
+
+    def Stop(self):
+        self.stop_calls += 1
+        if not self.started:
+            raise RuntimeError("Session not started")
+
+
+class _AlwaysFailingSession:
+    """Every call fails, no matter what — exercises dispose_remote_desktop_
+    session()'s guarantee that it never raises, even when nothing works."""
+
+    def Start(self):
+        raise RuntimeError("boom")
+
+    def Stop(self):
+        raise RuntimeError("boom")
+
+
+def test_dispose_remote_desktop_session_succeeds_immediately_when_started():
+    from server.core.remote_input import dispose_remote_desktop_session
+
+    session = _NeverStartedThenDisposableSession()
+    session.started = True  # simulate an already-started session
+    assert dispose_remote_desktop_session(session) is True
+    assert session.stop_calls == 1
+    assert session.start_calls == 0  # Start() fallback never needed
+
+
+def test_dispose_remote_desktop_session_falls_back_to_start_then_stop():
+    from server.core.remote_input import dispose_remote_desktop_session
+
+    session = _NeverStartedThenDisposableSession()
+    assert dispose_remote_desktop_session(session) is True
+    # First Stop() raised (not started); Start() then a second Stop()
+    # is what actually disposed it.
+    assert session.start_calls == 1
+    assert session.stop_calls == 2
+
+
+def test_dispose_remote_desktop_session_never_raises_and_reports_failure():
+    from server.core.remote_input import dispose_remote_desktop_session
+
+    session = _AlwaysFailingSession()
+    assert dispose_remote_desktop_session(session) is False  # never raises
+
+
+def test_create_failure_disposes_a_partially_created_session(monkeypatch):
+    """create()'s own failure path — SessionId read fails after
+    CreateSession already succeeded — must dispose the now-orphaned
+    session via dispose_remote_desktop_session(), not a bare Stop().
+
+    dbus.Interface() is monkeypatched at the module level (restored by
+    the `monkeypatch` fixture automatically) rather than routed through
+    the real dbus.Interface + a get_dbus_method-implementing fake: it is
+    only a thin wrapper (object, dbus_interface) -> proxy, so replacing
+    it outright with a fake that returns the right stub per interface
+    name is simpler and exercises exactly the same create() code path.
+    """
+    import server.core.remote_input as rim
+
+    class _RDRootIface:
+        def CreateSession(self):
+            return "/org/gnome/Mutter/RemoteDesktop/Session/1"
+
+    class _BrokenPropsIface:
+        def Get(self, iface, name):
+            raise RuntimeError("SessionId read failed")
+
+    session = _NeverStartedThenDisposableSession()
+
+    class _FakeCreateBus:
+        def get_object(self, bus_name, path):
+            return object()  # opaque; only the patched Interface() below matters
+
+    def _fake_interface(obj, iface):
+        if iface == rim.RD_IF:
+            return _RDRootIface()
+        if iface == rim.PROPS_IF:
+            return _BrokenPropsIface()
+        if iface == rim.RD_SES_IF:
+            return session
+        raise AssertionError(f"unexpected interface: {iface}")
+
+    monkeypatch.setattr(rim.dbus, "Interface", _fake_interface)
+
+    ri = RemoteInput(100, 100, bus=_FakeCreateBus())
+    result = ri.create()
+
+    assert result is None
+    # dispose_remote_desktop_session's Start()-then-Stop() fallback ran,
+    # proving this isn't just a bare (ineffective) Stop() call.
+    assert session.start_calls == 1
+    assert session.stop_calls == 2
