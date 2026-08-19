@@ -129,7 +129,7 @@ Toggle off mid-drag and confirm the pointer stops and no button stays down. Togg
 
 **Observations worth acting on:**
 
-1. **The log dominates but is rarely useful to an end user.** It is a developer tool. Collapsing it behind a disclosure would reclaim most of the window.
+1. ~~**The log dominates but is rarely useful to an end user.**~~ **This was wrong** — there is no log pane in the window at all; logging goes to the terminal. Corrected on 2026-08-19 after reading the file rather than trusting the earlier summary.
 2. **Two settings now sit inline with status.** As settings accumulate — audio and keyboard are planned for 2.1/2.2 — inline placement will not scale. A settings area, or a settings dialog, is the conventional answer.
 3. **Status is a flat list of labels.** The three things a user actually wants at a glance are: is it connected, at what resolution and rate, and is input live. Those could be prominent, with the rest secondary.
 4. **The README claimed a three-tab Libadwaita UI that never existed.** If a tabbed layout is wanted, that is a real (if larger) piece of work; if not, the docs are now honest and this is just a layout question.
@@ -148,3 +148,19 @@ Toggle off mid-drag and confirm the pointer stops and no button stays down. Togg
 - Real multi-touch, keyboard (2.2.0), audio (2.1.0), clipboard.
 - Kinetic/inertial scrolling. Get one-to-one scroll working first.
 - Reworking the Android UI. This plan touches the Android client only if Task 1 needs a client-side change, which it should not.
+
+
+---
+
+## Status, 2026-08-19
+
+- **Task 1 (scroll): done** — `f54a914`. Normalised deltas are converted to
+  discrete wheel notches with the sub-notch remainder carried. Sensitivity and
+  direction are named constants and **both still want a feel-test on hardware**.
+- **Task 2 (live toggle): not started.**
+- **Task 3 (UI): done** — `ea6314e`, though not as originally described. The
+  premise about a log pane was wrong. What actually shipped is the two settings
+  cards consolidated into one, keeping both "active this session" indicators
+  because the requested and effective settings can legitimately differ.
+  Verified by walking the widget tree under Xvfb; **the visual result is
+  unverified** — there is no screenshot tool here.
