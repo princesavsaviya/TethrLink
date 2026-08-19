@@ -160,12 +160,15 @@ class MainActivityV2 : AppCompatActivity() {
     private var screenOffReceiver: BroadcastReceiver? = null
 
     // ── Back press: reveal/dismiss the streaming overlay ─────────────────────
-    // Tapping the surface to reveal the overlay (below) stops working once
-    // touch input is active, since the tap now drives the PC pointer instead
-    // — so back is the one affordance that's always available and can never
-    // collide with a touch on the surface. Enabled only while the streaming
-    // screen is showing (see showStreamingScreen/showConnectionState), so
-    // back keeps its normal "leave the activity" meaning everywhere else.
+    // The surface has no tap-to-reveal click listener (see onCreate): a tap
+    // on the video always risks being pointer input, so it can never
+    // unambiguously mean "show the overlay" — not just while touch input is
+    // active. Back press is therefore the only way to bring the overlay back
+    // up while streaming; the overlay keeps its own tap-to-dismiss (also in
+    // onCreate) so it can still be closed once revealed. Enabled only while
+    // the streaming screen is showing (see showStreamingScreen/
+    // showConnectionState), so back keeps its normal "leave the activity"
+    // meaning everywhere else.
     private val overlayBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             streamOverlay.visibility =
@@ -218,7 +221,10 @@ class MainActivityV2 : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableImmersiveMode()
 
-        surfaceView.setOnClickListener { streamOverlay.visibility = View.VISIBLE }
+        // No tap-to-reveal click listener on the surface: a tap on the video
+        // must be unambiguous pointer input (when negotiated) rather than
+        // competing with revealing the overlay. See overlayBackCallback
+        // below for the (now sole) way to bring the overlay back up.
         surfaceView.setOnTouchListener { _, event -> handleSurfaceTouch(event) }
         streamOverlay.setOnClickListener { streamOverlay.visibility = View.GONE }
         disconnectBtn.setOnClickListener {
@@ -592,9 +598,11 @@ class MainActivityV2 : AppCompatActivity() {
                 }
 
                 // Only wire up touch once the server has actually negotiated
-                // support — otherwise gestureInterpreter stays null, the touch
-                // listener is a no-op, and the surfaceView click listener keeps
-                // working exactly as it did before this feature existed.
+                // support — otherwise gestureInterpreter stays null and the
+                // touch listener is simply a no-op (the surface has no
+                // tap-to-reveal click listener to fall back to any more; the
+                // overlay is reached via back press instead, see
+                // overlayBackCallback).
                 withContext(Dispatchers.Main) {
                     streamWidthPx     = streamW
                     streamHeightPx    = streamH
@@ -705,16 +713,17 @@ class MainActivityV2 : AppCompatActivity() {
     //
     // `gestureInterpreter` is null whenever the server hasn't negotiated input
     // (old server, or the user's touch toggle is off), so every branch below
-    // returns `false` in that case — the event is left unconsumed and the
-    // existing tap-to-reveal-overlay click listener behaves exactly as before.
+    // returns `false` in that case — the event is simply left unconsumed
+    // (the surface has no click listener to fall back to; the overlay is
+    // reached via back press while streaming, see overlayBackCallback).
 
     private fun handleSurfaceTouch(event: MotionEvent): Boolean {
         val interpreter = gestureInterpreter ?: return false
         // Suspended (backgrounded, split-screen, or locked): don't start or
         // continue a gesture. Anything that was held has already been
-        // released by suspendInput(); falling through here lets the tap
-        // still reach the surface's click listener, same as when input was
-        // never negotiated in the first place.
+        // released by suspendInput(); returning false here just leaves the
+        // tap unconsumed, same as when input was never negotiated in the
+        // first place.
         if (inputSuspended) return false
         val viewW = surfaceView.width
         val viewH = surfaceView.height
