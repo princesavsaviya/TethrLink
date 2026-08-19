@@ -4,7 +4,7 @@
 
 TethrLink creates a **real second display** on your Linux PC — not a mirror of your existing screen — and streams it to an Android tablet over a direct USB connection. Windows you drag onto it stay there. The PC captures a dedicated virtual monitor through GNOME's ScreenCast API, encodes it with hardware H.264, and sends it over the private subnet that USB tethering already provides.
 
-**Version 1.1.0** — H.264 is now the default codec, encoded on the GPU where one is available.
+**Version 2.0.0** — the tablet can now drive your pointer. Touch is off by default; turn it on in the server window.
 
 ---
 
@@ -23,6 +23,9 @@ TethrLink creates a **real second display** on your Linux PC — not a mirror of
 ```
 
 The virtual monitor is sized from **your PC's display height and the tablet's aspect ratio**, so the shared edge lines up for seamless pointer movement and nothing is stretched on the panel. See [Display geometry](#display-geometry).
+
+With touch enabled, taps and drags on the tablet drive the PC's pointer on that
+virtual display — see [Touch input](#touch-input).
 
 ---
 
@@ -118,6 +121,40 @@ Override it with `TETHRLINK_RES` if you would rather trade decode headroom for s
 
 ---
 
+## Touch input
+
+Off by default. A capability that can drive your desktop should be opted into,
+so enable it in the server window before connecting.
+
+- **Tap** clicks, **drag** drags, **long press** right-clicks, **two-finger
+  drag** scrolls. Gesture timings come from Android's own `ViewConfiguration`,
+  so they match every other app on the tablet and honour accessibility settings.
+- **Every touch clicks — there is no hover.** That is inherent to driving a
+  pointer by absolute position, and it means tooltips and hover menus will not
+  trigger from touch.
+- Input is injected through GNOME's `RemoteDesktop` API and is **scoped to the
+  virtual display by the platform itself** — it cannot reach your laptop's own
+  screen.
+- **Press Back on the tablet** to reveal the disconnect overlay while streaming.
+- Requires GNOME on Wayland, like the virtual display. X11 sessions get video
+  only, and the window says so rather than claiming otherwise.
+
+### Who the server will talk to
+
+The server serves only peers reachable over a **USB-attached network
+interface**, plus loopback. Wi-Fi and container bridges are refused. That
+matters more now than it did for a view-only stream: reaching the port used to
+mean seeing your screen, and with input it would mean controlling the machine.
+
+The tether subnet is detected at runtime rather than assumed, so it works
+whatever address your device hands out. `TETHRLINK_TETHER_SUBNET` overrides it,
+and rejects anything implausibly broad rather than silently disabling the
+filter.
+
+There is still **no authentication** on the connection. Over a cable that is a
+reasonable trust boundary; any future transport that is not a cable must add
+pairing first.
+
 ## The video pipeline
 
 **Dropping happens before encoding, never after.** Discarding a raw frame only lowers the frame rate; discarding an *encoded* frame breaks the decoder's reference chain and corrupts everything until the next keyframe. So a leaky queue sits upstream of the encoder, and everything downstream is lossless.
@@ -197,9 +234,12 @@ Run the tests with `./venv/bin/python -m pytest`.
 | UDP auto-discovery, Snap and Debian packaging | Done |
 | Hardware H.264 with runtime encoder negotiation | Done (1.1.0) |
 | Device-derived display geometry | Done (1.1.0) |
+| Touch input — pointer, click, right-click, scroll | Done (2.0.0) |
 | Adaptive bitrate from measured link conditions | Planned |
 | Touch input forwarding (tablet → PC pointer) | Planned |
-| Audio forwarding | Planned |
+| Audio forwarding | Planned (2.1.0) |
+| Keyboard input | Planned (2.2.0) |
+| Real multi-touch and gestures | Planned |
 
 ---
 
