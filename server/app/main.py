@@ -76,6 +76,27 @@ class TethrLinkApp(Gtk.Application):
                     "Ignoring malformed TETHRLINK_RES=%r — expected WIDTHxHEIGHT, "
                     "e.g. 1920x1080", _res_env)
 
+        # Touch input override for testing. ServerConfig.touch_enabled
+        # defaults to False deliberately (see its comment in
+        # server_core.py) — this capability can drive the user's desktop,
+        # so shipping it off and opting in is a product decision, not an
+        # oversight. TETHRLINK_TOUCH=1 flips it on for a run without
+        # touching the UI; malformed values are ignored with a warning,
+        # same tolerance TETHRLINK_RES applies above.
+        _touch_env = os.environ.get("TETHRLINK_TOUCH")
+        if _touch_env:
+            _touch_norm = _touch_env.strip().lower()
+            if _touch_norm in ("1", "true", "yes", "on"):
+                self._config.touch_enabled = True
+                log.info("Touch input overridden via TETHRLINK_TOUCH=%s", _touch_env)
+            elif _touch_norm in ("0", "false", "no", "off"):
+                self._config.touch_enabled = False
+                log.info("Touch input overridden via TETHRLINK_TOUCH=%s", _touch_env)
+            else:
+                log.warning(
+                    "Ignoring malformed TETHRLINK_TOUCH=%r — expected 1/0 "
+                    "(or true/false)", _touch_env)
+
         self._state      = ServerState()
         self._core       = None
         self._window     = None
@@ -111,6 +132,8 @@ class TethrLinkApp(Gtk.Application):
             on_stop=self._on_stop,
             on_codec_change=self._on_codec_change,
             initial_codec="h264" if self._config.codec == CODEC_H264 else "jpeg",
+            on_touch_change=self._on_touch_change,
+            initial_touch_enabled=self._config.touch_enabled,
         )
         self._window.set_server_running(False)
         self._window.present()
@@ -146,6 +169,7 @@ class TethrLinkApp(Gtk.Application):
             fps=s.fps,
             resolution=s.resolution,
             codec_name=s.codec_name,
+            input_active=s.input_active,
         )
 
     def _on_log(self, message: str):
@@ -158,6 +182,13 @@ class TethrLinkApp(Gtk.Application):
         self._config.codec = detect_codec(codec_str)
         log.info("Codec set to %s via UI — applies to the next connection",
                  codec_str)
+
+    def _on_touch_change(self, enabled: bool):
+        self._config.touch_enabled = enabled
+        log.info(
+            "Touch input %s via UI — applies to the next connection",
+            "enabled" if enabled else "disabled",
+        )
 
     # ── Start / Stop ──────────────────────────────────────────────────────────
 

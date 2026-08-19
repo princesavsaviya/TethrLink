@@ -5,9 +5,10 @@ Single scrollable page, two states:
   Stopped:  logo + welcome + Start Server button
   Running:  status bar + "Open Display Settings" link + Stop Server button
 
-A Video Codec card (JPEG/H.264) sits between the two and stays visible in
-both states. It is locked while a client is connected, since the pipeline
-is built once per connection and a change mid-stream would do nothing.
+A Video Codec card (JPEG/H.264) and a Touch Input toggle sit between the
+two and stay visible in both states. Both are locked while a client is
+connected: the pipeline (and, for touch, the RemoteDesktop pairing) is
+built once per connection, so a change mid-stream would do nothing.
 """
 
 import os
@@ -41,7 +42,8 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
     # Gtk.DropDown.new_from_strings() in _build_codec_settings().
     _CODEC_VALUES = ("h264", "jpeg")
 
-    def __init__(self, app, on_start, on_stop, on_codec_change, initial_codec="h264"):
+    def __init__(self, app, on_start, on_stop, on_codec_change, initial_codec="h264",
+                 on_touch_change=None, initial_touch_enabled=False):
         super().__init__(application=app)
 
         self._on_start = on_start
@@ -49,6 +51,12 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
         self._on_codec_change = on_codec_change
         self._initial_codec = initial_codec if initial_codec in self._CODEC_VALUES else "h264"
         self._updating = False
+        # on_touch_change may legitimately be None (e.g. a caller that only
+        # wants the window shell); guarded at the call site in
+        # _on_touch_toggled below rather than defaulting to a no-op here.
+        self._on_touch_change = on_touch_change
+        self._initial_touch_enabled = bool(initial_touch_enabled)
+        self._updating_touch = False
 
         self.set_title("TethrLink")
         self.set_default_size(540, 480)
@@ -82,6 +90,7 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
 
         self._build_stopped_state()
         self._build_codec_settings()
+        self._build_touch_settings()
         self._build_status_bar()
         self._build_running_state()
 
@@ -176,6 +185,58 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
         card.append(self._active_codec_label)
 
         self._codec_card = card
+        self._root.append(card)
+
+    # ── Touch input settings ──────────────────────────────────────────────────
+
+    def _build_touch_settings(self):
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        card.add_css_class("section-card")
+        card.set_margin_top(20)
+        card.set_margin_start(28)
+        card.set_margin_end(28)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        row.set_valign(Gtk.Align.CENTER)
+
+        icon = _label("👆", "", Gtk.Align.START)
+        icon.set_css_classes([])
+
+        desc_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        desc_box.set_hexpand(True)
+        desc_box.append(_label("Touch Input", "setting-name"))
+        desc_box.append(_label(
+            "Lets the tablet drive this PC's pointer. Off by default —\n"
+            "a real capability, not just a preference. A change applies\n"
+            "to the next connection — it's locked while streaming.",
+            "setting-hint", wrap=True,
+        ))
+
+        self._touch_switch = Gtk.Switch()
+        self._touch_switch.add_css_class("touch-switch")
+        self._touch_switch.set_valign(Gtk.Align.CENTER)
+
+        self._updating_touch = True
+        self._touch_switch.set_active(self._initial_touch_enabled)
+        self._updating_touch = False
+        self._touch_switch.connect("notify::active", self._on_touch_toggled)
+
+        row.append(icon)
+        row.append(desc_box)
+        row.append(self._touch_switch)
+        card.append(row)
+
+        # What is actually active for the current session — set only while
+        # connected, the same way _active_codec_label reports the resolved
+        # codec rather than the requested one: negotiation can want input
+        # and still not get it (the client didn't advertise support, or
+        # RemoteDesktop pairing failed and the session fell back to
+        # video-only), so this reflects that outcome, not the toggle.
+        self._active_touch_label = _label("", "setting-hint", Gtk.Align.CENTER)
+        self._active_touch_label.set_margin_top(6)
+        card.append(self._active_touch_label)
+
+        self._touch_card = card
         self._root.append(card)
 
     # ── Status bar ────────────────────────────────────────────────────────────
@@ -290,11 +351,15 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
             self._show_stopped()
 
     def update_status(self, connected: bool, client_ip: str = "",
-                      fps: int = 0, resolution: str = "", codec_name: str = ""):
+                      fps: int = 0, resolution: str = "", codec_name: str = "",
+                      input_active: bool = False):
         # The pipeline is built once per connection, so a codec change made
         # mid-stream would silently do nothing. Lock the control while
-        # connected rather than accept an edit that has no effect.
+        # connected rather than accept an edit that has no effect. Touch
+        # input is the same story: RemoteDesktop pairing happens once, at
+        # connection time, so the switch is locked for the same reason.
         self._codec_dropdown.set_sensitive(not connected)
+        self._touch_switch.set_sensitive(not connected)
         if connected:
             self._status_dot.remove_css_class("idle")
             self._status_dot.add_css_class("connected")
@@ -307,6 +372,10 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
             self._active_codec_label.set_label(
                 f"Active this session: {codec_name}" if codec_name else ""
             )
+            self._active_touch_label.set_label(
+                "Touch input active this session" if input_active
+                else "Touch input inactive this session"
+            )
         else:
             self._status_dot.remove_css_class("connected")
             self._status_dot.add_css_class("idle")
@@ -314,6 +383,7 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
             self._status_fps.set_label("")
             self._res_label.set_label("")
             self._active_codec_label.set_label("")
+            self._active_touch_label.set_label("")
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -323,6 +393,12 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
         idx = dropdown.get_selected()
         if 0 <= idx < len(self._CODEC_VALUES):
             self._on_codec_change(self._CODEC_VALUES[idx])
+
+    def _on_touch_toggled(self, switch, _pspec):
+        if self._updating_touch:
+            return
+        if self._on_touch_change:
+            self._on_touch_change(switch.get_active())
 
     def _open_display_settings(self, _btn):
         try:

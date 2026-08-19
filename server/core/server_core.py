@@ -28,7 +28,7 @@ except (ValueError, ImportError):
     GstVideo = None
 
 from .discovery import DiscoveryBroadcaster
-from server.core.link import is_tether_peer
+from server.core.link import TETHER_SUBNET, is_tether_peer
 from server.core.profiles import ProfileStore
 from server.core.preflight import (
     H264_ENCODER_CANDIDATES,
@@ -476,6 +476,17 @@ class ServerConfig:
     device_height: int = 0
     orientation: str = "landscape"      # "landscape" | "portrait"
     auto_start: bool = False
+    # Off is deliberate, not an oversight. Every other field on this
+    # dataclass configures how the stream looks; this one decides whether a
+    # connected client can drive the pointer/keyboard on this machine at
+    # all. That's real capability transfer, not a preference, so it ships
+    # opted OUT and the user has to explicitly opt in — via the UI toggle
+    # in ui/window.py or TETHRLINK_TOUCH in app/main.py — rather than
+    # shipping it on and trusting every client to behave. See
+    # ServerCore._handle_client: when this is False, no RemoteInput /
+    # RemoteDesktop session is even created for the connection, regardless
+    # of what the client advertises wanting.
+    touch_enabled: bool = False
 
 
 @dataclass
@@ -486,6 +497,11 @@ class ServerState:
     fps: int = 0
     resolution: str = ""
     codec_name: str = ""
+    # What is actually true for the current session, mirroring codec_name:
+    # not "did the client ask for input" and not "is touch_enabled set" —
+    # whether a RemoteInput session was actually negotiated and paired.
+    # False whenever nothing is connected.
+    input_active: bool = False
     port: int = 0
     active_width: int = 0    # resolved dims from last/current connection
     active_height: int = 0
@@ -1999,7 +2015,7 @@ class ServerCore:
         # shutdown event causes the stream loop to exit and finally runs.
         # Nothing to do here for display/capture.
         self._state.update(running=False, connected=False,
-                           client_name="", fps=0)
+                           client_name="", fps=0, input_active=False)
         self._log("Server stopped")
 
     def set_quality(self, quality: int) -> None:
@@ -2036,7 +2052,12 @@ class ServerCore:
             try:
                 conn, addr = self._srv.accept()
                 if not is_tether_peer(addr[0]):
-                    log.warning("Rejected connection from non-tether peer %s", addr[0])
+                    log.warning(
+                        "Rejected connection from %s — not on the expected "
+                        "tethering subnet (%s). If this device tethers over "
+                        "a different subnet, set TETHRLINK_TETHER_SUBNET to "
+                        "override.", addr[0], TETHER_SUBNET,
+                    )
                     conn.close()
                     continue
                 threading.Thread(
@@ -2448,7 +2469,17 @@ class ServerCore:
             self._state.update(connected=True, client_name=device_name,
                                active_width=width, active_height=height,
                                device_width=self._config.device_width,
-                               device_height=self._config.device_height)
+                               device_height=self._config.device_height,
+                               # Whether input actually paired for this
+                               # session — not the request, not the
+                               # config flag. Negotiation can succeed
+                               # (touch_enabled True, client asked for it)
+                               # and pairing can still fail (see the
+                               # video-only retry above), in which case
+                               # remote_input is None here and this
+                               # correctly reports False.
+                               input_active=(self._input_negotiated
+                                             and remote_input is not None))
 
             frame_count  = 0
             fps_deadline = time.monotonic() + 1.0
@@ -2622,7 +2653,8 @@ class ServerCore:
             self._log(f"Stream error ({device_name}): {e}")
         finally:
             self._conn = None
-            self._state.update(connected=False, client_name="", fps=0)
+            self._state.update(connected=False, client_name="", fps=0,
+                               input_active=False)
             # Signal the input reader (if one was started) to stop and give
             # it a bounded window to actually exit — its own finally clause
             # calls RemoteInput.release_all(), and running that before
