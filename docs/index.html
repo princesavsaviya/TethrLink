@@ -398,15 +398,30 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
   .pipe-facts{grid-template-columns:1fr}
   section.wrap{padding:78px 24px}
 }
+/* the pipeline is the one diagram that cannot shrink and stay readable, so it
+   has a stacked variant rather than a scroller the reader has to discover */
+/* .stage svg is (0,1,1), so these have to match it or they never apply */
+.stage svg.viz-tall{display:none}
 @media (max-width:720px){
-  .wide-viz{overflow-x:auto;-webkit-overflow-scrolling:touch}
-  .wide-viz svg{min-width:620px}
+  .stage svg.viz-wide{display:none}
+  .stage svg.viz-tall{display:block}
 }
 @media (max-width:620px){
   .nav-links{display:none}
-  .gestures{grid-template-columns:1fr}
   .nl-row{flex-direction:column}
   .foot{flex-direction:column;align-items:flex-start}
+  .hero-btns{flex-direction:column;align-items:stretch}
+  .hero-btns .btn{justify-content:center}
+  .gesture-body{padding:13px 14px 15px}
+  .gesture-body h3{font-size:15px}
+  .gesture-body p{font-size:12.5px}
+  .step{grid-template-columns:32px 1fr;gap:12px;padding:19px 18px}
+  .note{padding:17px 18px}
+  .card,.dl-card,.fact{padding:22px 20px}
+  .stage{padding:12px}
+}
+@media (max-width:344px){
+  .gestures{grid-template-columns:1fr}
 }
 
 /* ═══ REDUCED MOTION ═══ */
@@ -495,12 +510,12 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
         <!-- laptop -->
         <rect x="24" y="60" width="230" height="150" rx="9" fill="url(#scr)" stroke="#312e6b"/>
         <path d="M8 214h262l-13 15H21z" fill="#12122e" stroke="#312e6b"/>
-        <text x="34" y="82" font-family="IBM Plex Mono, monospace" font-size="10" fill="#817da4">LINUX PC</text>
+        <text x="34" y="82" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#817da4">LINUX PC</text>
 
         <!-- tablet -->
         <rect x="356" y="80" width="180" height="132" rx="11" fill="url(#scr)" stroke="#312e6b"/>
         <rect x="365" y="89" width="162" height="114" rx="5" fill="#08081c"/>
-        <text x="366" y="228" font-family="IBM Plex Mono, monospace" font-size="10" fill="#817da4">ANDROID TABLET</text>
+        <text x="366" y="228" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#817da4">ANDROID TABLET</text>
 
         <!-- cable: video down, input up -->
         <path d="M258 150 C300 150 314 146 352 146" fill="none" stroke="#312e6b" stroke-width="4" stroke-linecap="round"/>
@@ -553,19 +568,19 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
     <div class="split-media stage">
       <svg viewBox="0 0 480 250" role="img" aria-label="Diagram: the tablet appears alongside the laptop in the GNOME display arrangement.">
         <rect x="20" y="60" width="230" height="140" rx="8" fill="#101028" stroke="#312e6b"/>
-        <text x="32" y="82" font-family="IBM Plex Mono, monospace" font-size="10" fill="#817da4">BUILT-IN · 1920×1080</text>
+        <text x="32" y="82" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#817da4">BUILT-IN · 1920×1080</text>
         <rect x="34" y="94" width="90" height="60" rx="4" fill="#6366f1" opacity=".28"/>
         <rect x="132" y="94" width="102" height="90" rx="4" fill="#8b5cf6" opacity=".22"/>
 
         <rect x="270" y="60" width="190" height="140" rx="8" fill="#101028" stroke="#4ade80" stroke-opacity=".45"/>
-        <text x="282" y="82" font-family="IBM Plex Mono, monospace" font-size="10" fill="#4ade80">TETHRLINK · 1730×1080</text>
+        <text x="282" y="82" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#4ade80">TETHRLINK · 1730×1080</text>
         <rect x="284" y="94" width="162" height="92" rx="4" fill="#22d3ee" opacity=".2"/>
         <rect x="296" y="108" width="80" height="5" rx="2.5" fill="#22d3ee" opacity=".55"/>
         <rect x="296" y="122" width="120" height="5" rx="2.5" fill="#22d3ee" opacity=".35"/>
         <rect x="296" y="136" width="96" height="5" rx="2.5" fill="#22d3ee" opacity=".35"/>
 
         <line x1="250" y1="60" x2="250" y2="200" stroke="#4ade80" stroke-width="1.6" stroke-dasharray="3 5" opacity=".7"/>
-        <text x="176" y="228" font-family="IBM Plex Mono, monospace" font-size="10" fill="#817da4">shared edge — fully traversable</text>
+        <text x="176" y="228" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#817da4">shared edge — fully traversable</text>
       </svg>
     </div>
   </div>
@@ -711,8 +726,8 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
     </p>
   </div>
 
-  <div class="stage wide-viz">
-    <svg viewBox="0 0 900 250" role="img" aria-label="Diagram: the PC captures, encodes and sends video to the tablet; the tablet sends pointer input back.">
+  <div class="stage">
+    <svg class="viz-wide" viewBox="0 0 900 250" role="img" aria-label="Diagram: the PC captures, encodes and sends video to the tablet; the tablet sends pointer input back.">
       <rect x="16" y="30" width="360" height="130" rx="10" fill="#101028" stroke="#312e6b"/>
       <text x="34" y="54" font-family="IBM Plex Mono, monospace" font-size="11" fill="#817da4">LINUX PC</text>
       <g font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#b3afd6">
@@ -734,18 +749,48 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
       <line x1="380" y1="78" x2="612" y2="78" stroke="#1c3540" stroke-width="3"/>
       <line class="flow-d" x1="380" y1="78" x2="612" y2="78" stroke="#22d3ee" stroke-width="2.6" stroke-linecap="round"/>
       <path d="M612 78l-9-5v10z" fill="#22d3ee"/>
-      <text x="418" y="66" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#22d3ee">video · TCP 51137</text>
+      <text x="418" y="66" font-family="IBM Plex Mono, monospace" font-size="12" fill="#22d3ee">video · TCP 51137</text>
 
       <!-- upstream -->
       <line x1="380" y1="122" x2="612" y2="122" stroke="#1c3a26" stroke-width="3"/>
       <line class="flow-d" x1="612" y1="122" x2="380" y2="122" stroke="#4ade80" stroke-width="2.6" stroke-linecap="round"/>
       <path d="M380 122l9-5v10z" fill="#4ade80"/>
-      <text x="418" y="142" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#4ade80">input · same connection</text>
+      <text x="418" y="142" font-family="IBM Plex Mono, monospace" font-size="12" fill="#4ade80">input · same connection</text>
 
-      <text x="420" y="192" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#817da4" text-anchor="middle">UDP :8765 discovery broadcast</text>
+      <text x="420" y="192" font-family="IBM Plex Mono, monospace" font-size="12" fill="#817da4" text-anchor="middle">UDP :8765 discovery broadcast</text>
       <line x1="196" y1="176" x2="196" y2="196" stroke="#312e6b" stroke-width="1.5" stroke-dasharray="3 4"/>
       <line x1="196" y1="196" x2="752" y2="196" stroke="#312e6b" stroke-width="1.5" stroke-dasharray="3 4"/>
       <line x1="752" y1="196" x2="752" y2="176" stroke="#312e6b" stroke-width="1.5" stroke-dasharray="3 4"/>
+    </svg>
+    <svg class="viz-tall" viewBox="0 0 360 434" role="img" aria-label="Diagram: the PC captures, encodes and sends video down to the tablet; the tablet sends pointer input back up.">
+      <rect x="8" y="8" width="344" height="128" rx="10" fill="#101028" stroke="#312e6b"/>
+      <text x="24" y="32" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#817da4">LINUX PC</text>
+      <g font-family="IBM Plex Mono, monospace" font-size="12" fill="#b3afd6">
+        <text x="24" y="58">Mutter ScreenCast → monitor</text>
+        <text x="24" y="78">PipeWire → frame capture</text>
+        <text x="24" y="98">GStreamer → H.264 / JPEG</text>
+        <text x="24" y="118" fill="#4ade80">RemoteDesktop ← injection</text>
+      </g>
+
+      <line x1="60" y1="150" x2="60" y2="248" stroke="#1c3540" stroke-width="3"/>
+      <line class="flow-d" x1="60" y1="150" x2="60" y2="248" stroke="#22d3ee" stroke-width="2.6" stroke-linecap="round"/>
+      <path d="M60 252l-5-9h10z" fill="#22d3ee"/>
+      <text x="74" y="186" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#22d3ee">video · TCP 51137</text>
+
+      <line x1="300" y1="150" x2="300" y2="248" stroke="#1c3a26" stroke-width="3"/>
+      <line class="flow-d" x1="300" y1="248" x2="300" y2="150" stroke="#4ade80" stroke-width="2.6" stroke-linecap="round"/>
+      <path d="M300 146l-5 9h10z" fill="#4ade80"/>
+      <text x="286" y="222" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#4ade80" text-anchor="end">input · same connection</text>
+
+      <text x="180" y="276" font-family="IBM Plex Mono, monospace" font-size="11" fill="#817da4" text-anchor="middle">UDP :8765 discovery broadcast</text>
+
+      <rect x="8" y="294" width="344" height="128" rx="10" fill="#101028" stroke="#312e6b"/>
+      <text x="24" y="318" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#817da4">ANDROID TABLET</text>
+      <g font-family="IBM Plex Mono, monospace" font-size="12" fill="#b3afd6">
+        <text x="24" y="344">MediaCodec → decode</text>
+        <text x="24" y="364">fullscreen render</text>
+        <text x="24" y="384" fill="#4ade80">touch → normalised [0,1]</text>
+      </g>
     </svg>
     <div class="pipe-legend">
       <span><i style="background:#22d3ee"></i> video, PC → tablet</span>
@@ -793,19 +838,19 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
     <div class="stage">
       <svg viewBox="0 0 420 280" role="img" aria-label="Diagram: matched heights make the shared edge between the two displays fully traversable.">
         <rect x="20" y="70" width="180" height="101" rx="5" fill="#141433" stroke="#312e6b"/>
-        <text x="20" y="62" font-family="IBM Plex Mono, monospace" font-size="10" fill="#817da4">1920 × 1080</text>
+        <text x="20" y="62" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#817da4">1920 × 1080</text>
         <rect x="212" y="70" width="162" height="101" rx="5" fill="#141433" stroke="#4ade80" stroke-opacity=".5"/>
-        <text x="212" y="62" font-family="IBM Plex Mono, monospace" font-size="10" fill="#4ade80">1730 × 1080</text>
+        <text x="212" y="62" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#4ade80">1730 × 1080</text>
 
         <line x1="206" y1="70" x2="206" y2="171" stroke="#4ade80" stroke-width="2"/>
-        <text x="206" y="192" font-family="IBM Plex Mono, monospace" font-size="10" fill="#4ade80" text-anchor="middle">edge aligns</text>
+        <text x="206" y="192" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#4ade80" text-anchor="middle">edge aligns</text>
 
         <line x1="392" y1="70" x2="392" y2="171" stroke="#817da4" stroke-width="1"/>
         <path d="M389 73l3-4 3 4M389 168l3 4 3-4" fill="none" stroke="#817da4" stroke-width="1"/>
-        <text x="400" y="124" font-family="IBM Plex Mono, monospace" font-size="10" fill="#817da4" transform="rotate(90 400 124)" text-anchor="middle">1080</text>
+        <text x="400" y="124" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#817da4" transform="rotate(90 400 124)" text-anchor="middle">1080</text>
 
-        <text x="20" y="230" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#817da4">reported size is untrusted input —</text>
-        <text x="20" y="248" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#817da4">anything outside 64–16384 px is rejected</text>
+        <text x="20" y="230" font-family="IBM Plex Mono, monospace" font-size="12" fill="#817da4">reported size is untrusted input —</text>
+        <text x="20" y="248" font-family="IBM Plex Mono, monospace" font-size="12" fill="#817da4">anything outside 64–16384 px is rejected</text>
       </svg>
     </div>
   </div>
@@ -862,9 +907,9 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
       <svg viewBox="0 0 440 240" role="img" aria-label="Diagram: only USB-attached interfaces and loopback are served; Wi-Fi and container bridges are refused.">
         <rect x="150" y="94" width="140" height="52" rx="8" fill="#141433" stroke="#4ade80" stroke-opacity=".5"/>
         <text x="220" y="118" font-family="IBM Plex Mono, monospace" font-size="11" fill="#4ade80" text-anchor="middle">tethrlink</text>
-        <text x="220" y="134" font-family="IBM Plex Mono, monospace" font-size="10" fill="#817da4" text-anchor="middle">:51137</text>
+        <text x="220" y="134" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="#817da4" text-anchor="middle">:51137</text>
 
-        <g font-family="IBM Plex Mono, monospace" font-size="10.5">
+        <g font-family="IBM Plex Mono, monospace" font-size="12">
           <text x="16" y="46" fill="#4ade80">usb0 (tether)</text>
           <line x1="16" y1="56" x2="146" y2="100" stroke="#4ade80" stroke-width="1.8"/>
           <text x="16" y="150" fill="#f87171">wlan0 (Wi-Fi)</text>
