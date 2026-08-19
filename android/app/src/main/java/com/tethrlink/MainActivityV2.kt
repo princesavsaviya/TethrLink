@@ -36,6 +36,7 @@ import com.tethrlink.input.GestureInterpreter
 import com.tethrlink.input.InputCodec
 import com.tethrlink.input.PointerAction
 import com.tethrlink.input.VideoGeometry
+import com.tethrlink.net.HelloMessage
 import com.tethrlink.ui.ConnectionState
 import com.tethrlink.ui.ConnectionScreen_OptionC
 // To switch to Option C, replace the two lines above with:
@@ -512,7 +513,7 @@ class MainActivityV2 : AppCompatActivity() {
                     .putInt(screenW).putInt(screenH).array()
 
                 val outStream = socket.getOutputStream()
-                outStream.write(MAGIC_HELLO + DEVICE_ID + screenDims + deviceName + InputCodec.EXT_BLOCK)
+                outStream.write(HelloMessage.build(MAGIC_HELLO, DEVICE_ID, screenDims, deviceName, InputCodec.EXT_BLOCK))
                 outStream.flush()
 
                 val responseHeader = ByteArray(6)
