@@ -30,7 +30,7 @@ DEFAULT_TETHER_SUBNET = "192.168.42.0/24"
 
 def resolve_tether_subnet(raw: Optional[str]) -> str:
     """Validate a candidate tethering subnet, falling back to the default
-    on anything malformed.
+    on anything malformed or implausible.
 
     Pure function — no environment access — so the override logic is
     testable without touching os.environ or reloading the module. Never
@@ -39,6 +39,29 @@ def resolve_tether_subnet(raw: Optional[str]) -> str:
     not crash the server on startup. `strict=True` also catches a network
     string with host bits set (e.g. "192.168.42.5/24") as malformed, since
     that isn't a subnet declaration either.
+
+    Beyond syntax, the candidate must plausibly *be* a USB-tethering subnet,
+    fail closed rather than open, and be loud either way:
+
+    - IPv4 only. An IPv6 network is never a valid Android USB tethering
+      subnet, and accepting one would silently reject every real (IPv4)
+      tether peer in is_tether_peer() — a fail-closed but silent breakage.
+    - Private and no broader than /16. Every real tethering subnet we know
+      of — AOSP's default and every OEM/ROM variant — is a small private
+      range: 192.168.x.0/24, 172.x.x.0/24 or 10.x.x.0/24. Requiring
+      "private and /16 or narrower" admits all of those, plus generous
+      headroom for anything unusual, while rejecting sweeping values like
+      0.0.0.0/0, a public range, or a whole RFC1918 block. This override
+      exists to widen *which* small subnet is trusted, not to widen *how
+      much* is trusted — a value that fails this check would silently
+      undo the entire tether filter (see is_tether_peer()) rather than
+      just fail to find the tablet, so it must be rejected loudly and
+      fall back to the real default, never to something broader.
+
+    Every branch logs: malformed input, an implausible-but-well-formed
+    network, and — just as important, since this is a security control —
+    a successful override, so an operator can see in the log that the
+    default is no longer in effect.
     """
     if raw is None:
         return DEFAULT_TETHER_SUBNET
@@ -54,6 +77,34 @@ def resolve_tether_subnet(raw: Optional[str]) -> str:
             raw, e, DEFAULT_TETHER_SUBNET,
         )
         return DEFAULT_TETHER_SUBNET
+
+    if network.version != 4:
+        log.warning(
+            "Ignoring TETHRLINK_TETHER_SUBNET=%r: IPv6 is never a valid "
+            "Android USB tethering subnet, and accepting it would silently "
+            "reject every real IPv4 tether peer — falling back to the "
+            "default tethering subnet %s",
+            raw, DEFAULT_TETHER_SUBNET,
+        )
+        return DEFAULT_TETHER_SUBNET
+
+    if not network.is_private or network.prefixlen < 16:
+        log.warning(
+            "Ignoring TETHRLINK_TETHER_SUBNET=%r: not a plausible USB "
+            "tethering subnet (must be private and no broader than /16) — "
+            "a value this sweeping would silently disable the tether "
+            "filter, so falling back to the default tethering subnet %s",
+            raw, DEFAULT_TETHER_SUBNET,
+        )
+        return DEFAULT_TETHER_SUBNET
+
+    log.warning(
+        "TETHRLINK_TETHER_SUBNET override in effect: serving peers on %s "
+        "instead of the default tethering subnet %s — this is expected "
+        "only if this device's tethering implementation doesn't use the "
+        "AOSP default",
+        network, DEFAULT_TETHER_SUBNET,
+    )
     return str(network)
 
 
