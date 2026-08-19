@@ -44,7 +44,9 @@ Adwaita widgets that stylesheet never had to cover.
 ──────────────────────────────────────────────────────────────────────────────
 """
 
+import json
 import os
+import pathlib
 import sys
 
 import gi
@@ -54,6 +56,35 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, Gtk  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Settings are user intent, so they belong in config — not in
+# ~/.cache/tethrlink/profiles.json, which is a regenerable cache. This is the
+# path the old README always claimed was used; making it true is overdue.
+SETTINGS = (pathlib.Path(os.environ.get("XDG_CONFIG_HOME",
+                                        pathlib.Path.home() / ".config"))
+            / "tethrlink" / "settings.json")
+
+
+def load_settings():
+    """Best-effort: a corrupt or missing file must never stop the app."""
+    try:
+        d = json.loads(SETTINGS.read_text())
+        if isinstance(d, dict):
+            return d
+    except Exception:
+        pass
+    return {}
+
+
+def save_settings(d):
+    try:
+        SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS.write_text(json.dumps(d, indent=2))
+        return True
+    except OSError:
+        return False
+
+
 STYLE = os.path.join(REPO, "server", "ui", "style.css")
 LOGO = os.path.join(REPO, "server", "ui", "assets", "tethrlink.png")
 
@@ -176,8 +207,9 @@ class PrototypeWindow(Adw.ApplicationWindow):
         super().__init__(application=app, title="TethrLink")
         self.set_default_size(440, 640)
         self._state = state
-        self._want_codec = "H.264"
-        self._want_touch = False
+        saved = load_settings()
+        self._want_codec = saved.get("codec", "H.264")
+        self._want_touch = bool(saved.get("touch_enabled", False))
 
         self._toasts = Adw.ToastOverlay()
         toolbar = Adw.ToolbarView()
@@ -263,6 +295,13 @@ class PrototypeWindow(Adw.ApplicationWindow):
         btn.set_margin_top(10)
         btn.connect("clicked", lambda _b: self._go("waiting"))
         box.append(btn)
+
+        # Settings belong here too. Touch applies from the moment a client
+        # connects, so a user who can only reach it *after* starting would
+        # have to connect, toggle, then reconnect to actually use it.
+        settings = self._settings_group(None, None)
+        settings.set_margin_top(18)
+        box.append(settings)
         return box
 
     # ── waiting ──────────────────────────────────────────────────────────────
@@ -396,12 +435,18 @@ class PrototypeWindow(Adw.ApplicationWindow):
         group.add(touch)
         return group
 
+    def _persist(self):
+        save_settings({"codec": self._want_codec,
+                       "touch_enabled": self._want_touch})
+
     def _on_codec(self, row, _p):
         self._want_codec = ["H.264", "JPEG"][row.get_selected()]
+        self._persist()
         self._toast(f"{self._want_codec} applies on the next connection")
 
     def _on_touch(self, row, _p):
         self._want_touch = row.get_active()
+        self._persist()
         self._toast("Touch enabled" if self._want_touch else "Touch disabled")
 
     def _stat(self, value, caption):
