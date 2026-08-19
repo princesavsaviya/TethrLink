@@ -18,6 +18,7 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
@@ -142,6 +143,20 @@ class MainActivityV2 : AppCompatActivity() {
     // but read/written from the main-thread touch listener.
     @Volatile private var touchGestureActive = false
 
+    // ── Back press: reveal/dismiss the streaming overlay ─────────────────────
+    // Tapping the surface to reveal the overlay (below) stops working once
+    // touch input is active, since the tap now drives the PC pointer instead
+    // — so back is the one affordance that's always available and can never
+    // collide with a touch on the surface. Enabled only while the streaming
+    // screen is showing (see showStreamingScreen/showConnectionState), so
+    // back keeps its normal "leave the activity" meaning everywhere else.
+    private val overlayBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            streamOverlay.visibility =
+                if (streamOverlay.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
+    }
+
     private val inputHandler = Handler(Looper.getMainLooper())
     private val longPressPoll = object : Runnable {
         override fun run() {
@@ -195,6 +210,8 @@ class MainActivityV2 : AppCompatActivity() {
             startStateLoop()
         }
 
+        onBackPressedDispatcher.addCallback(this, overlayBackCallback)
+
         startStateLoop()
     }
 
@@ -235,6 +252,7 @@ class MainActivityV2 : AppCompatActivity() {
         surfaceView.visibility        = View.GONE
         fpsPill.visibility            = View.GONE
         streamOverlay.visibility      = View.GONE
+        overlayBackCallback.isEnabled = false
     }
 
     // Hides Compose UI and shows the native SurfaceView for streaming.
@@ -243,6 +261,7 @@ class MainActivityV2 : AppCompatActivity() {
         surfaceView.visibility        = View.VISIBLE
         fpsPill.visibility            = View.GONE
         streamOverlay.visibility      = View.GONE
+        overlayBackCallback.isEnabled = true
     }
 
     // ── USB / tethering detection ─────────────────────────────────────────────
