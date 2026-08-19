@@ -39,8 +39,6 @@ import com.tethrlink.input.VideoGeometry
 import com.tethrlink.net.HelloMessage
 import com.tethrlink.ui.ConnectionState
 import com.tethrlink.ui.ConnectionScreen_OptionC
-// To switch to Option C, replace the two lines above with:
-// import com.tethrlink.ui.ConnectionScreen_OptionC
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -56,8 +54,8 @@ import java.net.InetSocketAddress
 import java.net.Socket
 
 /**
- * MainActivityV2 — drives ConnectionScreen_OptionA (or C) instead of the
- * four individual screens. All streaming / discovery logic is unchanged.
+ * MainActivityV2 — drives ConnectionScreen_OptionC instead of four
+ * individual screens. All streaming / discovery logic is unchanged.
  *
  * To activate: change android:name in AndroidManifest.xml to
  * ".MainActivityV2" (or swap with MainActivity there).
@@ -94,6 +92,20 @@ class MainActivityV2 : AppCompatActivity() {
 
     // Single state drives all 4 setup screens — replaces the Int(1..4) flag
     private val connectionState = mutableStateOf<ConnectionState>(ConnectionState.NoUsb)
+
+    // The tablet's own USB tether address, refreshed each time Scanning is
+    // entered. Shown to the user as proof the cable/tethering half of the
+    // link is working, independent of whether a server has been found.
+    private val tetherAddressState = mutableStateOf<String?>(null)
+
+    // The last server we actually completed a handshake with, kept for the
+    // lifetime of the activity (not persisted across process death). Lets
+    // the Scanning screen offer a direct connect that bypasses discovery
+    // entirely, rather than only being tried silently after a disconnect
+    // (see startStreaming's reconnect path below).
+    private var lastKnownIp:   String? = null
+    private var lastKnownPort: Int     = DEFAULT_SERVER_PORT
+    private val hasRememberedServerState = mutableStateOf(false)
 
     // ── Screen 5: Streaming ───────────────────────────────────────────────────
     private lateinit var surfaceView:       SurfaceView
@@ -192,8 +204,9 @@ class MainActivityV2 : AppCompatActivity() {
         composeUiContainer = findViewById(R.id.composeUiContainer)
         composeUiContainer.setContent {
             ConnectionScreen_OptionC(
-                // Switch to ConnectionScreen_OptionC(...) here to use Option C
                 state = connectionState.value,
+                tetherAddress = tetherAddressState.value,
+                hasRememberedServer = hasRememberedServerState.value,
                 onEnableTether = {
                     try {
                         startActivity(Intent("android.settings.TETHER_SETTINGS"))
@@ -203,6 +216,9 @@ class MainActivityV2 : AppCompatActivity() {
                 },
                 onStartExtending = {
                     discoveredIp?.let { ip -> startStreaming(ip, discoveredPort) }
+                },
+                onConnectToLastKnown = {
+                    lastKnownIp?.let { ip -> startStreaming(ip, lastKnownPort) }
                 }
             )
         }
@@ -308,6 +324,12 @@ class MainActivityV2 : AppCompatActivity() {
     // Shows one of the 4 setup states inside the Compose UI.
     private suspend fun showConnectionState(state: ConnectionState) = withContext(Dispatchers.Main) {
         connectionState.value = state
+        // Refresh the diagnostic-only state Scanning displays. Computed here
+        // rather than continuously so it stays cheap: it only needs to be
+        // current at the moment the user is looking at the Scanning screen.
+        if (state == ConnectionState.Scanning) {
+            tetherAddressState.value = getUsbTetherAddress()
+        }
         composeUiContainer.visibility = View.VISIBLE
         surfaceView.visibility        = View.GONE
         fpsPill.visibility            = View.GONE
@@ -345,6 +367,30 @@ class MainActivityV2 : AppCompatActivity() {
                         .any { !it.isLoopbackAddress }
                 } ?: false
         } catch (_: Exception) { false }
+    }
+
+    // Same interface walk as isUsbTetherActive(), but returns the tablet's
+    // own address on that interface instead of just a yes/no. Lets the
+    // Scanning screen show proof the cable/tethering half of the link is
+    // genuinely up, independent of whether a server has been discovered.
+    private fun getUsbTetherAddress(): String? {
+        return try {
+            java.net.NetworkInterface.getNetworkInterfaces()
+                ?.asSequence()
+                ?.filter { iface ->
+                    iface.isUp && !iface.isLoopback &&
+                    (iface.name.startsWith("rndis") ||
+                     iface.name.startsWith("usb")   ||
+                     iface.name.startsWith("ncm"))
+                }
+                ?.flatMap { iface ->
+                    iface.inetAddresses.asSequence()
+                        .filterIsInstance<java.net.Inet4Address>()
+                        .filter { !it.isLoopbackAddress }
+                }
+                ?.firstOrNull()
+                ?.hostAddress
+        } catch (_: Exception) { null }
     }
 
     private fun isUsbTetherIp(ip: String): Boolean {
@@ -549,6 +595,14 @@ class MainActivityV2 : AppCompatActivity() {
                     }
                     else -> throw Exception("Unexpected server response")
                 }
+
+                // A real handshake just completed, so this address is proven
+                // reachable — remember it for the "Connect to last known
+                // server" action on a future stuck scan, independent of the
+                // reconnect-only autoConnectIp path below.
+                lastKnownIp   = ip
+                lastKnownPort = port
+                withContext(Dispatchers.Main) { hasRememberedServerState.value = true }
 
                 withContext(Dispatchers.Main) {
                     lockToLandscape()
