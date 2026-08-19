@@ -63,9 +63,9 @@ This path was broken for the 1.1.0 and 2.0.0 releases — the packaged code had 
 ### From source
 
 ```bash
-sudo apt install python3-gi python3-dbus \
+sudo apt install python3-gi python3-dbus python3-pil \
   gstreamer1.0-pipewire gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-ugly gir1.2-gstreamer-1.0 gir1.2-gtk-4.0
+  gstreamer1.0-plugins-ugly gir1.2-gstreamer-1.0 gir1.2-gtk-4.0 gir1.2-adw-1
 
 # Optional — hardware encoding
 sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-vaapi
