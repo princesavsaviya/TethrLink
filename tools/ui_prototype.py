@@ -94,9 +94,9 @@ LOGO = os.path.join(REPO, "server", "ui", "assets", "tethrlink.png")
 # text and borders scale across surfaces better than fixed greys.
 BG = "#0F0F1A"        # bg_primary
 CARD = "#1A1A2E"      # bg_card
-BORDER = "#1AFFFFFF"  # border_default — alpha, so it works on any surface
+BORDER = "#FFFFFF1A"  # border_default — GTK is #RRGGBBAA, alpha LAST
 TEXT = "#FFFFFF"      # text_primary
-DIM = "#99FFFFFF"     # text_secondary
+DIM = "#FFFFFF99"     # text_secondary — alpha last, not Android's ARGB
 ACCENT = "#7C6AF7"    # brand
 ACCENT_HOVER = "#6455D4"  # brand_pressed
 OK = "#4ADE80"        # success

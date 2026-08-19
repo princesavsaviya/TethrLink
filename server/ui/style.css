@@ -32,7 +32,7 @@
 @define-color destructive_color  #EF4444;
 
 /* Alpha-based, so one value works on every surface. */
-@define-color borders            #1AFFFFFF;
+@define-color borders            #FFFFFF1A;
 
 /* TethrLink GTK4 + Libadwaita Dark Theme
  *
@@ -45,9 +45,9 @@
  *
  *   bg_primary     #0F0F1A
  *   bg_card        #1A1A2E
- *   border_default #1AFFFFFF  (alpha, so it works on any surface)
+ *   border_default #FFFFFF1A  (alpha, so it works on any surface)
  *   text_primary   #FFFFFF
- *   text_secondary #99FFFFFF
+ *   text_secondary #FFFFFF99
  *   brand          #7C6AF7
  *   brand_pressed  #6455D4
  *   success        #4ADE80
@@ -63,7 +63,7 @@ window {
 
 headerbar {
     background-color: #1A1A2E;
-    border-bottom: 1px solid #1AFFFFFF;
+    border-bottom: 1px solid #FFFFFF1A;
     color: #FFFFFF;
 }
 
@@ -74,14 +74,14 @@ headerbar {
 /* ── Adwaita rows/lists: match the card surface, not Adwaita's own light grey ── */
 
 preferencesgroup > box > label {
-    color: #99FFFFFF;
+    color: #FFFFFF99;
     font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.4px;
 }
 
 row.activatable:hover {
-    background-color: #1AFFFFFF;   /* border_default — a 10% white wash */
+    background-color: #FFFFFF1A;   /* border_default — a 10% white wash */
     color: #FFFFFF;                /* never let hover dim the label */
 }
 
@@ -91,12 +91,12 @@ listview, list, row {
 }
 
 list {
-    border: 1px solid #1AFFFFFF;
+    border: 1px solid #FFFFFF1A;
     border-radius: 12px;
 }
 
 row > box > label.subtitle {
-    color: #99FFFFFF;
+    color: #FFFFFF99;
     font-size: 12px;
 }
 
@@ -109,7 +109,7 @@ row > box > label.subtitle {
 }
 
 .hero-sub {
-    color: #99FFFFFF;
+    color: #FFFFFF99;
     font-size: 13px;
 }
 
@@ -125,7 +125,7 @@ row > box > label.subtitle {
 
 .stat-card {
     background-color: #1A1A2E;
-    border: 1px solid #1AFFFFFF;
+    border: 1px solid #FFFFFF1A;
     border-radius: 12px;
 }
 
@@ -137,7 +137,7 @@ row > box > label.subtitle {
 
 .stat-label {
     font-size: 11px;
-    color: #99FFFFFF;
+    color: #FFFFFF99;
     letter-spacing: 0.3px;
 }
 
@@ -160,8 +160,8 @@ row > box > label.subtitle {
 .pill-quiet {
     background-image: none;
     background-color: transparent;
-    color: #99FFFFFF;
-    border: 1px solid #1AFFFFFF;
+    color: #FFFFFF99;
+    border: 1px solid #FFFFFF1A;
     border-radius: 999px;
     padding: 8px 24px;
 }

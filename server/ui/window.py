@@ -148,7 +148,20 @@ class TethrLinkWindow(Adw.ApplicationWindow):
         toolbar.add_top_bar(header)
 
         self._content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        toolbar.set_content(self._content)
+
+        # Maximised, the window is as wide as the display, and settings rows
+        # stretched across it read as a spreadsheet rather than a panel. Clamp
+        # keeps the content column at a readable width and centres it, which is
+        # what every GNOME app does with preference rows.
+        clamp = Adw.Clamp()
+        clamp.set_maximum_size(560)
+        clamp.set_tightening_threshold(460)
+        clamp.set_child(self._content)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(clamp)
+        toolbar.set_content(scroller)
         self._toasts.set_child(toolbar)
         self.set_content(self._toasts)
 
