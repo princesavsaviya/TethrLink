@@ -4,10 +4,15 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Canvas
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
@@ -21,6 +26,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import android.util.Base64
 import org.json.JSONObject
+import com.tethrlink.input.GestureInterpreter
+import com.tethrlink.input.InputCodec
+import com.tethrlink.input.PointerAction
+import com.tethrlink.input.VideoGeometry
 import com.tethrlink.ui.ConnectionState
 import com.tethrlink.ui.ConnectionScreen_OptionC
 // To switch to Option C, replace the two lines above with:
@@ -63,7 +72,13 @@ class MainActivityV2 : AppCompatActivity() {
     // ── Protocol magic bytes ──────────────────────────────────────────────────
     private val MAGIC_HELLO = "TLHELO".toByteArray()
     private val MAGIC_OK    = "TLOK__".toByteArray()
+    private val MAGIC_OK2   = "TLOK2_".toByteArray() // OK + server negotiated pointer input
     private val MAGIC_BUSY  = "TLBUSY".toByteArray()
+
+    // ── Touch input ───────────────────────────────────────────────────────────
+    // Polling interval for the long-press deadline: no touch event arrives
+    // while a finger rests still, so this has to be checked on a timer.
+    private val LONG_PRESS_POLL_INTERVAL_MS = 50L
 
     // ── Device identity ───────────────────────────────────────────────────────
     private val DEVICE_ID: ByteArray by lazy { getOrCreateDeviceId() }
@@ -105,6 +120,37 @@ class MainActivityV2 : AppCompatActivity() {
 
     private val logLines = mutableListOf<String>()
 
+    // ── Touch input state (set up per connection, torn down on disconnect) ────
+    // Written from the streaming coroutine (IO dispatcher), read from the main
+    // thread inside the touch listener and the long-press poll — volatile for
+    // cross-thread visibility.
+    @Volatile private var inputSupported: Boolean = false
+    @Volatile private var inputOutputStream: java.io.OutputStream? = null
+    @Volatile private var gestureInterpreter: GestureInterpreter? = null
+    @Volatile private var streamWidthPx: Int = 0
+    @Volatile private var streamHeightPx: Int = 0
+    @Volatile private var streamLetterboxed: Boolean = false
+
+    // Guards the shared socket output stream so a batch of pointer actions is
+    // written as one contiguous unit rather than interleaved with another.
+    private val inputWriteLock = Object()
+
+    // True from a down that landed on video until the matching up/cancel, so a
+    // down rejected by VideoGeometry (touch on a letterbox bar) can't leave a
+    // later move/up calling into GestureInterpreter without a matching down.
+    // Volatile: reset from the streaming coroutine's teardown (IO dispatcher)
+    // but read/written from the main-thread touch listener.
+    @Volatile private var touchGestureActive = false
+
+    private val inputHandler = Handler(Looper.getMainLooper())
+    private val longPressPoll = object : Runnable {
+        override fun run() {
+            val interpreter = gestureInterpreter ?: return
+            dispatchPointerActions(interpreter.checkLongPress(SystemClock.uptimeMillis()))
+            inputHandler.postDelayed(this, LONG_PRESS_POLL_INTERVAL_MS)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -142,6 +188,7 @@ class MainActivityV2 : AppCompatActivity() {
         enableImmersiveMode()
 
         surfaceView.setOnClickListener { streamOverlay.visibility = View.VISIBLE }
+        surfaceView.setOnTouchListener { _, event -> handleSurfaceTouch(event) }
         streamOverlay.setOnClickListener { streamOverlay.visibility = View.GONE }
         disconnectBtn.setOnClickListener {
             streamJob?.cancel()
@@ -392,8 +439,9 @@ class MainActivityV2 : AppCompatActivity() {
                 val screenDims = java.nio.ByteBuffer.allocate(8)
                     .putInt(screenW).putInt(screenH).array()
 
-                socket.getOutputStream().write(MAGIC_HELLO + DEVICE_ID + screenDims + deviceName)
-                socket.getOutputStream().flush()
+                val outStream = socket.getOutputStream()
+                outStream.write(MAGIC_HELLO + DEVICE_ID + screenDims + deviceName + InputCodec.EXT_BLOCK)
+                outStream.flush()
 
                 val responseHeader = ByteArray(6)
                 input.readFully(responseHeader)
@@ -409,8 +457,18 @@ class MainActivityV2 : AppCompatActivity() {
                         }
                         return@launch
                     }
-                    !responseHeader.contentEquals(MAGIC_OK) ->
-                        throw Exception("Unexpected server response")
+                    // Input negotiated: the server saw our extension block and has
+                    // touch enabled. Anything else (including a plain MAGIC_OK)
+                    // means the server never reads input, so none must be sent.
+                    responseHeader.contentEquals(MAGIC_OK2) -> {
+                        inputSupported    = true
+                        inputOutputStream = outStream
+                    }
+                    responseHeader.contentEquals(MAGIC_OK) -> {
+                        inputSupported    = false
+                        inputOutputStream = null
+                    }
+                    else -> throw Exception("Unexpected server response")
                 }
 
                 withContext(Dispatchers.Main) {
@@ -460,6 +518,26 @@ class MainActivityV2 : AppCompatActivity() {
                     kotlinx.coroutines.withTimeout(SURFACE_TIMEOUT_MS) { surfaceReady.await() }
                 }
 
+                // Only wire up touch once the server has actually negotiated
+                // support — otherwise gestureInterpreter stays null, the touch
+                // listener is a no-op, and the surfaceView click listener keeps
+                // working exactly as it did before this feature existed.
+                withContext(Dispatchers.Main) {
+                    streamWidthPx     = streamW
+                    streamHeightPx    = streamH
+                    streamLetterboxed = (codecId != 1) // 1 = H.264 (fills view), else JPEG (letterboxed)
+                    gestureInterpreter = if (inputSupported) {
+                        val slopPx  = ViewConfiguration.get(this@MainActivityV2).scaledTouchSlop.toFloat()
+                        val widthPx = surfaceView.width.takeIf { it > 0 } ?: 1
+                        GestureInterpreter(
+                            longPressMs = ViewConfiguration.getLongPressTimeout().toLong(),
+                            touchSlopPx = slopPx / widthPx,
+                        )
+                    } else {
+                        null
+                    }
+                }
+
                 val latestBitmap = java.util.concurrent.atomic.AtomicReference<android.graphics.Bitmap?>()
                 val decoder = StreamDecoder(
                     surface  = surface,
@@ -506,6 +584,15 @@ class MainActivityV2 : AppCompatActivity() {
             } catch (e: Exception) {
                 // Ignore silent timeouts during recovery
             } finally {
+                // Tear down touch state with the connection: no button must be
+                // left "held" from this session, and no stale interpreter or
+                // output stream must survive into the next one.
+                inputSupported     = false
+                inputOutputStream  = null
+                gestureInterpreter = null
+                touchGestureActive = false
+                inputHandler.removeCallbacks(longPressPoll)
+
                 if (isUsbTetherActive()) {
                     withContext(Dispatchers.Main) { unlockOrientation() }
                     showConnectionState(ConnectionState.Scanning)
@@ -538,6 +625,111 @@ class MainActivityV2 : AppCompatActivity() {
             canvas.drawBitmap(bitmap, null, dst, null)
         } finally {
             holder.unlockCanvasAndPost(canvas)
+        }
+    }
+
+    // ── Touch input ───────────────────────────────────────────────────────────
+    //
+    // `gestureInterpreter` is null whenever the server hasn't negotiated input
+    // (old server, or the user's touch toggle is off), so every branch below
+    // returns `false` in that case — the event is left unconsumed and the
+    // existing tap-to-reveal-overlay click listener behaves exactly as before.
+
+    private fun handleSurfaceTouch(event: MotionEvent): Boolean {
+        val interpreter = gestureInterpreter ?: return false
+        val viewW = surfaceView.width
+        val viewH = surfaceView.height
+        if (viewW <= 0 || viewH <= 0) return false
+
+        val nowMs = event.eventTime // SystemClock.uptimeMillis() time base
+
+        fun normalisedAt(index: Int) = VideoGeometry.normalise(
+            event.getX(index), event.getY(index),
+            viewW, viewH,
+            streamWidthPx, streamHeightPx,
+            streamLetterboxed,
+        )
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                // A down landing on a letterbox bar is not a touch on the
+                // desktop (see VideoGeometry) — don't start a gesture for it,
+                // so a later move/up for this same pointer is also ignored
+                // below instead of being fed to an interpreter that never saw
+                // the matching down.
+                val p = normalisedAt(0)
+                if (p == null) {
+                    touchGestureActive = false
+                    return false
+                }
+                touchGestureActive = true
+                inputHandler.removeCallbacks(longPressPoll)
+                dispatchPointerActions(interpreter.onDown(p.x, p.y, nowMs))
+                inputHandler.postDelayed(longPressPoll, LONG_PRESS_POLL_INTERVAL_MS)
+            }
+
+            MotionEvent.ACTION_MOVE,
+            MotionEvent.ACTION_POINTER_DOWN,
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (!touchGestureActive) return false
+                // Track pointer 0 for position; a finger that has strayed onto
+                // a letterbox bar simply stops updating position until it
+                // returns, rather than releasing or desyncing state.
+                val p = normalisedAt(0) ?: return true
+                dispatchPointerActions(interpreter.onMove(p.x, p.y, nowMs, event.pointerCount))
+            }
+
+            MotionEvent.ACTION_UP -> {
+                if (!touchGestureActive) return false
+                touchGestureActive = false
+                inputHandler.removeCallbacks(longPressPoll)
+                dispatchPointerActions(interpreter.onUp(nowMs))
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                val wasActive = touchGestureActive
+                touchGestureActive = false
+                inputHandler.removeCallbacks(longPressPoll)
+                if (!wasActive) return false
+                dispatchPointerActions(interpreter.onCancel())
+            }
+
+            else -> return false
+        }
+        return true
+    }
+
+    /**
+     * Encodes and sends a batch of [PointerAction]s as one contiguous write.
+     * Batching (rather than one write per action) keeps e.g. a down's
+     * move-then-press pair from being interleaved with another batch on the
+     * shared stream.
+     *
+     * The actual write is dispatched onto [ioScope] (IO dispatcher) rather
+     * than performed inline, so a stalled socket — however unlikely once the
+     * server has confirmed it reads input — blocks a background thread, never
+     * the main thread that also drives the video render loop.
+     */
+    private fun dispatchPointerActions(actions: List<PointerAction>) {
+        if (actions.isEmpty() || !inputSupported) return
+        val out = inputOutputStream ?: return
+        val frames = actions.map { action ->
+            when (action) {
+                is PointerAction.Move   -> InputCodec.motion(action.x, action.y)
+                is PointerAction.Button -> InputCodec.button(action.button, action.pressed)
+                is PointerAction.Scroll -> InputCodec.axis(action.dx, action.dy)
+            }
+        }
+        ioScope.launch {
+            try {
+                synchronized(inputWriteLock) {
+                    for (frame in frames) out.write(frame)
+                    out.flush()
+                }
+            } catch (_: Exception) {
+                // An input write failure must never take the video path down
+                // with it. Video is the product; input is an addition.
+            }
         }
     }
 
@@ -593,5 +785,6 @@ class MainActivityV2 : AppCompatActivity() {
         streamJob?.cancel()
         listenJob?.cancel()
         ioScope.cancel()
+        inputHandler.removeCallbacks(longPressPoll)
     }
 }
