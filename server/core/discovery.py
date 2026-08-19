@@ -20,7 +20,7 @@ import socket
 import threading
 import time
 
-from server.core.link import tether_broadcast_address
+from server.core.link import tether_broadcast_addresses
 
 log = logging.getLogger("TethrLink.Discovery")
 
@@ -69,7 +69,7 @@ class DiscoveryBroadcaster:
 
         while self._running:
             packet = self._make_packet()
-            for dest in (tether_broadcast_address(), "127.255.255.255"):
+            for dest in (*tether_broadcast_addresses(), "127.255.255.255"):
                 try:
                     sock.sendto(packet, (dest, BROADCAST_PORT))
                 except Exception as e:
