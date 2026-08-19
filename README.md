@@ -47,12 +47,25 @@ virtual display — see [Touch input](#touch-input).
 
 ## Installation
 
-### From source (recommended for 1.1.0)
+### Debian/Ubuntu package (.deb)
 
 ```bash
-sudo apt install python3-gi python3-dbus \
+git clone https://github.com/princesavsaviya/TethrLink.git
+cd TethrLink
+./build_deb.sh
+sudo apt install ./tethrlink_2.0.0_all.deb
+```
+
+There's no hosted release yet, so you build the package locally — `build_deb.sh` copies the current `server/` source tree and pulls in `mss`/`qrcode[pil]` via pip; `apt` then resolves the GStreamer, GTK4 and Libadwaita dependencies declared in the package. This installs a `tethrlink` launcher, a desktop entry, and an icon, all via normal `apt`/`dpkg` mechanisms (`sudo apt remove tethrlink` to uninstall).
+
+This path was broken for the 1.1.0 and 2.0.0 releases — the packaged code had silently drifted from source — and has just been fixed. It's been verified by inspecting the built package's contents (every module present, matching source byte-for-byte) but hasn't seen the same real-world mileage as the from-source path below. If something looks off, from-source is the fallback.
+
+### From source
+
+```bash
+sudo apt install python3-gi python3-dbus python3-pil \
   gstreamer1.0-pipewire gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-ugly gir1.2-gstreamer-1.0 gir1.2-gtk-4.0
+  gstreamer1.0-plugins-ugly gir1.2-gstreamer-1.0 gir1.2-gtk-4.0 gir1.2-adw-1
 
 # Optional — hardware encoding
 sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-vaapi
