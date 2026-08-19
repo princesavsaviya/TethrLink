@@ -1,259 +1,279 @@
 # TethrLink
 
-> Turn your Android tablet into a wired second monitor for Linux — no Wi-Fi, no cloud, no latency spikes.
+> Turn an Android tablet into a **real second display** for Linux, over a USB cable. No Wi-Fi, no router, no cloud.
 
-TethrLink streams a virtual display from your Linux PC to an Android tablet over a direct USB tethering connection. The PC captures a dedicated virtual screen via the Mutter ScreenCast D-Bus API, encodes frames with GStreamer (JPEG by default, H.264 available), and pushes them over a private `192.168.42.x` USB subnet. The Android client decodes and renders them fullscreen in real time.
+TethrLink creates a genuine second monitor on your Linux PC — not a mirror of a screen you already have. Windows you drag onto it stay there, GNOME arranges it like any other display, and the whole thing runs over the private network that USB tethering already gives you.
 
-**Measured end-to-end latency: ~47 ms at 45 FPS (production default). Tested up to 120 FPS.**
+The PC captures a dedicated virtual monitor through GNOME's ScreenCast API, encodes it with hardware H.264, and streams it down the cable. The tablet decodes it and renders fullscreen.
+
+**Version 2.0.0 — the tablet can now drive your pointer.** Tap to click, drag to drag, long-press to right-click, two-finger drag to scroll. Touch is off by default; you turn it on in the server window.
 
 ---
 
-## How It Works
+## How it works
 
 ```
-┌─────────────────────────────────────────┐        USB Tethering (192.168.42.x)
-│             Linux PC  (Server)          │
-│                                         │
-│  Mutter ScreenCast  → Virtual Display   │  TCP :51137  ┌──────────────────────┐
-│  GStreamer pipeline → JPEG / H.264      │ ───────────► │   Android Tablet     │
-│  UDP discovery broadcast                │             │                      │
-│  GTK4 + Libadwaita desktop UI           │             │  recv → decode       │
-│  pystray system tray                    │             │  → fullscreen render  │
-└─────────────────────────────────────────┘             └──────────────────────┘
+┌──────────────────────────────────────────────┐
+│  Linux PC (server)                           │       USB tethering
+│                                              │       (subnet detected at runtime)
+│  Mutter ScreenCast ──► virtual monitor       │
+│  PipeWire          ──► frame capture         │   TCP :51137   ┌──────────────────┐
+│  GStreamer         ──► H.264 (GPU) / JPEG    │ ─────────────► │  Android tablet  │
+│  UDP :8765         ──► auto-discovery        │                │   MediaCodec ──► │
+│  GTK4 desktop app                            │ ◄───────────── │   fullscreen     │
+│  RemoteDesktop     ◄── pointer injection     │  input channel │   touch capture  │
+└──────────────────────────────────────────────┘                └──────────────────┘
 ```
 
-Transport: private `192.168.42.x` subnet, ~1–5 ms RTT over USB cable.
-
----
-
-## Features
-
-### Linux Server
-- **Zero-config transport** — USB tethering only, no router or Wi-Fi needed
-- **Independent virtual display** — tablet gets its own screen space via Mutter ScreenCast D-Bus API
-- **Dual codec** — JPEG (default, stable) and H.264 via x264enc (`zerolatency` tune, BT.709 colorimetry, Annex B byte-stream); H.264 streaming is functional with quality improvements actively in progress
-- **Hot-reload** — change FPS, JPEG quality, and H.264 bitrate live without restarting the stream
-- **UDP auto-discovery** — server broadcasts on port 8765, Android app connects without manual IP entry
-- **GTK4 + Libadwaita UI** — dark desktop app with three-tab dashboard and system tray integration
-- **Persistent settings** — saved to `~/.config/tethrlink/settings.json`
-- **Virtual display layout control** — position tablet above, below, left, or right of primary monitor
-- **Resolution presets** — 720p, 1080p, 1440p, or custom size; landscape or portrait orientation
-- **Auto-start** — optionally start the server on boot
-
-### Android Client
-- **Guided setup flow** — walks through USB cable detection, tethering, scanning, and connection
-- **Auto-discovery** — listens for UDP broadcasts and populates server details automatically
-- **Fullscreen immersive rendering** — hides system UI; screen stays on during streaming
-- **Dual codec decoding** — JPEG via `BitmapFactory`; H.264 via `MediaCodec` async with hardware acceleration, NAL unit splitting, and SPS/PPS auto-detection (no pre-configuration needed)
-- **Overlay HUD** — tap to toggle FPS counter, resolution, codec, server name, and disconnect button
-- **Resolution & refresh rate selection** — choose 720p / 1080p / 1440p / 4K and 60 / 120 / 144 Hz before connecting
-- **Auto-reconnect** — reconnects with 2-second delay on stream interruption
-
----
-
-## Performance
-
-| Metric         | JPEG (default, stable)        | H.264 (available, WIP quality)|
-|----------------|-------------------------------|-------------------------------|
-| Encode latency | 7.57 ms / frame (Q=80)        | ~5–10 ms / frame              |
-| Frame size     | ~124 KB / frame (1920×1080)   | ~8 KB avg at 3 Mbps target    |
-| Stream rate    | 45 FPS (prod) / 120 FPS (test)| 45 FPS (prod) / 120 FPS (test)|
-| USB bandwidth  | ~40 Mbps                      | ~3–6 Mbps (configurable)      |
-| End-to-end     | ~47 ms                        | ~47 ms                        |
-| Color accuracy | —                             | BT.709                        |
+Video goes down the cable; with touch enabled, pointer intent comes back up the same TCP connection.
 
 ---
 
 ## Requirements
 
-**Linux PC:**
-- GNOME on Wayland (Mutter ScreenCast API)
-- Python 3.10+
-- GStreamer 1.0 with `gstreamer1.0-pipewire`, `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-bad`
-- GTK4 + Libadwaita (`gir1.2-gtk-4.0`, `gir1.2-adw-1`)
-- D-Bus bindings: `python3-gi`, `python3-dbus`
+**Linux PC**
 
-**Android tablet:**
-- Android 5.0+ (API 21)
-- USB cable with USB Tethering support
+- **GNOME on Wayland.** Required for both the virtual display and touch input — the virtual monitor uses Mutter's ScreenCast D-Bus API and input uses GNOME's `RemoteDesktop` API, neither of which has a cross-compositor equivalent. X11 sessions still work, but fall back to JPEG at the PC's own resolution and get video only, no touch.
+- Python 3.10+
+- GStreamer 1.20+ with the PipeWire, base, good and ugly plugin sets
+- GTK4, Libadwaita, and the GObject introspection bindings
+
+**Android tablet**
+
+- Android 5.0+ (API 21) with USB tethering support
+- A hardware H.264 decoder — effectively universal, since AVC decode is mandatory in Android's compatibility definition
+
+**Optional but recommended:** a GPU with a hardware H.264 encoder — NVIDIA (NVENC), Intel or AMD (VA-API), or Intel QSV. TethrLink detects and *verifies* one at runtime and falls back to software encoding when none works.
 
 ---
 
 ## Installation
 
-> **H.264 note:** The stable release packages (`.deb`, `.snap`, APK) include JPEG streaming only. H.264 is available on the `develop` branch and requires installing from source on both the Linux server and Android. See [H.264 (develop branch)](#h264-develop-branch) below.
-
-### Option 1 — Debian / Ubuntu package
-
-Download the latest `.deb` from [Releases](https://github.com/princesavsaviya/TethrLink/releases) and install:
+### Snap
 
 ```bash
-sudo dpkg -i tethrlink_1.0.0_amd64.deb
-sudo apt-get install -f   # resolve any missing dependencies
-tethrlink
+sudo snap install tethrlink
 ```
 
-### Option 2 — Snap package
+### Debian/Ubuntu package (.deb)
 
 ```bash
-snap install tethrlink_1.0.0_amd64.snap --dangerous
-tethrlink
+git clone https://github.com/princesavsaviya/TethrLink.git
+cd TethrLink
+./build_deb.sh
+sudo apt install ./tethrlink_2.0.0_all.deb
 ```
 
-### Option 3 — Run from source
+`build_deb.sh` copies the current `server/` source tree and pulls in `mss` and `qrcode[pil]` via pip; `apt` then resolves the GStreamer, GTK4 and Libadwaita dependencies declared in the package. You get a `tethrlink` launcher, a desktop entry and an icon through normal `apt`/`dpkg` mechanisms. Uninstall with `sudo apt remove tethrlink`.
+
+### From source
 
 ```bash
-# Install system dependencies
-sudo apt install python3-gi python3-dbus \
-  gstreamer1.0-pipewire gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-  gir1.2-gstreamer-1.0 gir1.2-gtk-4.0 gir1.2-adw-1
+sudo apt install python3-gi python3-dbus python3-pil \
+  gstreamer1.0-pipewire gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-ugly gir1.2-gstreamer-1.0 gir1.2-gtk-4.0 gir1.2-adw-1
 
-# Clone and set up a venv (system site-packages required for GObject bindings)
+# Optional — hardware encoding
+sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-vaapi
+
 git clone https://github.com/princesavsaviya/TethrLink.git
 cd TethrLink
 /usr/bin/python3 -m venv venv --system-site-packages
 source venv/bin/activate
 pip install -r requirements.txt
 
-# Launch
-python -m server.app
+python3 -m server.app.main
 ```
 
-### Android APK
+The venv **must** use `--system-site-packages`. The GObject and GStreamer bindings come from the system, not from pip.
 
-Download `app-release.apk` from [Releases](https://github.com/princesavsaviya/TethrLink/releases) and install it on your tablet.
+### Android app
 
----
-
-### H.264 (develop branch)
-
-H.264 streaming is functional but quality is still being refined. If you want to try it early, install both the server and the Android app from the `develop` branch.
-
-**Linux server:**
-
-```bash
-# Install H.264 encoder dependency (if not already present)
-sudo apt install gstreamer1.0-plugins-ugly   # provides x264enc
-
-# Clone the develop branch
-git clone -b develop https://github.com/princesavsaviya/TethrLink.git
-cd TethrLink
-/usr/bin/python3 -m venv venv --system-site-packages
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Launch
-python -m server.app
-```
-
-Then open **Stream Settings**, switch the codec to **H.264**, and restart the stream.
-
-**Android app:**
-
-The released APK does not include the H.264 decoder update. You need to build the app from the `develop` branch:
-
-1. Clone the repo (`-b develop`) and open the `android/` folder in Android Studio.
-2. Connect your tablet via USB, select **Run → Run 'app'** (or build a signed APK via **Build → Generate Signed APK**).
-3. Install the built APK on your tablet — it will replace the existing release version.
-
-> H.264 quality improvements are ongoing. If you run into visual artifacts or distortion, switching back to JPEG in Stream Settings is the stable fallback.
+Build from `android/` in Android Studio and install on the tablet.
 
 ---
 
 ## Usage
 
-### 1 — Start the server
-
-Run `tethrlink` (installed) or `python -m server.app` (from source).
-
-The GTK4 window opens. Go to the **Dashboard** tab and click **Start Server**.
-
-### 2 — Enable USB Tethering on Android
-
-Connect the USB cable, then:
-
-**Settings → Network → Hotspot & Tethering → USB Tethering → ON**
-
-The PC's tethering address is always `192.168.42.129`.
-
-### 3 — Open the Android app
-
-The app walks you through the connection automatically:
-
-1. **No USB** — prompts to connect the cable
-2. **Tethering Off** — prompts to enable USB tethering in Settings
-3. **Scanning** — listens for the server's UDP broadcast
-4. **Server Found** — shows server details; choose resolution, refresh rate, and monitor position
-5. **Streaming** — fullscreen display; tap to show the HUD overlay
+1. **Start the server** and click **Start Server**.
+2. **Enable USB tethering** on the tablet: *Settings → Connections → Mobile Hotspot and Tethering → USB tethering*.
+3. **Open the Android app.** It listens for the server's UDP broadcast on port 8765 and connects on its own — no IP to type in.
+4. **Arrange the display** in *GNOME Settings → Displays*. The tablet shows up as a new monitor; put it where you want it and drag windows across.
+5. **Enable touch** in the server window if you want the tablet to drive the pointer.
 
 ---
 
-## Desktop UI
+## Touch input
 
-The GTK4 app provides three tabs:
+Off by default. A capability that can drive your desktop should be something you opt into, so you enable it in the server window. The choice is remembered across restarts, and can be toggled while a client is connected.
 
-**Dashboard** — Start / stop the server, live connection status (codec, FPS, resolution, client device name), scrollable log.
+| Gesture | Effect |
+|---|---|
+| Tap | Left click |
+| Drag | Press, move, release |
+| Long press | Right click |
+| Two-finger drag | Scroll |
 
-**Stream Settings** — Codec (JPEG default / H.264 available), FPS slider (45 production, up to 120), JPEG quality, H.264 bitrate, TCP port, auto-start toggle. All changes apply live without restarting the stream.
+Gesture timings come from Android's own `ViewConfiguration`, so they match every other app on the tablet and honour the device's accessibility settings.
 
-**Display Settings** — Virtual display layout relative to your primary monitor (above / below / left / right), orientation (landscape / portrait), resolution preset (720p / 1080p / 1440p) or custom size.
+**Every touch clicks — there is no hover.** That is inherent to driving a pointer by absolute position rather than relative motion, and it means tooltips and hover-triggered menus will not open from touch.
+
+Input is injected through GNOME's `RemoteDesktop` API and is **scoped to the virtual display by the platform itself** — it cannot reach your laptop's own screen. That boundary is enforced by GNOME, not by care on our part.
+
+Coordinates travel normalised to `[0,1]` in video space, so the wire format stays resolution-independent and codec-specific rendering differences (H.264 fills the panel, JPEG letterboxes) stay in the renderer where they belong. Framing is `type:u8 length:u8 payload[length]` — the explicit length makes an unrecognised message skippable rather than fatal, so new message types never desynchronise an older peer.
+
+**Press Back on the tablet** to reveal the disconnect overlay while streaming.
+
+Touch requires GNOME on Wayland, like the virtual display. On X11 you get video only, and the window says so rather than pretending otherwise.
+
+### Who the server will talk to
+
+The server serves only peers reachable over a **USB-attached network interface**, plus loopback. Wi-Fi and container bridges are refused. This matters more than it did for a view-only stream: reaching the port used to mean seeing your screen, and with input it would mean controlling the machine.
+
+The tether subnet is **detected at runtime, not assumed**. Android hands the tethered subnet to whichever interface the USB cable created, and that varies by device, ROM and OEM — an earlier version hardcoded `192.168.42.0/24`, the AOSP default, and broke for every device handing out something else. What is actually reliable is *which interface is USB-attached*: on Linux, `/sys/class/net/<iface>/device` resolves through a path segment named `usbN` for anything enumerated over USB, and does not for PCI devices (Wi-Fi, Ethernet) or software bridges. So TethrLink enumerates USB-attached interfaces, reads whatever subnet each currently has, and trusts exactly that.
+
+Filtering happens at accept time rather than by binding to the tether address, because that interface has no IPv4 address until tethering is actually active — and the server routinely starts first.
+
+`TETHRLINK_TETHER_SUBNET` overrides the detection, and rejects anything implausibly broad rather than silently disabling the filter.
+
+There is still **no authentication** on the connection. Over a cable that is a reasonable trust boundary. Any future transport that is not a cable must add pairing first.
 
 ---
 
-## Tech Stack
+## Configuration
 
-| Layer           | Technology                                              |
-|-----------------|---------------------------------------------------------|
-| Server UI       | Python 3.12, GTK4 + Libadwaita, pystray                 |
-| Screen capture  | Mutter ScreenCast D-Bus API (Wayland), mss (X11 fallback)|
-| Encode / stream | GStreamer 1.0 (`x264enc` H.264 / `jpegenc` JPEG, `appsink`) |
-| Transport       | TCP over USB tethering (`192.168.42.x` subnet)           |
-| Discovery       | UDP broadcast (port 8765)                                |
-| Settings        | JSON (`~/.config/tethrlink/settings.json`)               |
-| Android client  | Kotlin 1.9, Jetpack Compose, MediaCodec, Coroutines      |
+The desktop window exposes a **codec selector** (H.264 / JPEG) and a **touch input** switch. The codec is locked while streaming, because the encoding pipeline is built once per connection — a change applies to the next one. The status line shows the codec **actually in use**, which can differ from the one requested (an X11 session always reports JPEG).
+
+Both choices persist to `~/.config/tethrlink/settings.json`. A missing or corrupt file falls back to defaults per field, never as an all-or-nothing decision, and never stops the app from starting.
+
+Environment variables override the UI:
+
+| Variable | Example | Effect |
+|---|---|---|
+| `TETHRLINK_CODEC` | `jpeg` | Force a codec |
+| `TETHRLINK_RES` | `1920x1080` | Force capture resolution instead of deriving it |
+| `TETHRLINK_TOUCH` | `1` | Force touch input on or off |
+| `TETHRLINK_TETHER_SUBNET` | `10.42.0.0/24` | Override tether subnet detection |
+
+```bash
+TETHRLINK_CODEC=jpeg python3 -m server.app.main
+```
+
+Encoder capability and per-device records are cached under `~/.cache/tethrlink/profiles.json`. That is a cache, not configuration — deleting it costs one slower startup and nothing else.
 
 ---
 
-## Repository Layout
+## Display geometry
+
+The capture size is derived rather than fixed:
+
+```
+height = min(your monitor's height, the tablet's height)
+width  = height × (the tablet's aspect ratio)
+```
+
+A 1920×1080 PC with a 2960×1848 tablet gives **1730×1080**. Three things fall out of that:
+
+- **The shared edge aligns.** GNOME only lets the pointer cross where two monitors overlap vertically. Matching heights makes the whole edge crossable instead of leaving an invisible wall partway along it.
+- **Nothing is stretched.** Taking the aspect ratio from the tablet makes the upscale uniform in both axes. Matching the PC's 16:9 to a 16:10 panel would stretch the picture about 11%.
+- **Decode stays affordable.** The tablet's native 2960×1848 at 30 fps demands roughly 164 Mpx/s, near the practical ceiling for a single H.264 stream.
+
+Dimensions reported by the client arrive over the wire in the HELLO handshake and are treated as untrusted: anything outside 64–16384 px is rejected and the PC's primary monitor is used instead. The final size is rounded up to what the encoder accepts — H.264 4:2:0 chroma needs even dimensions.
+
+Override the whole thing with `TETHRLINK_RES` if you would rather trade decode headroom for sharpness.
+
+---
+
+## The video pipeline
+
+**Dropping happens before encoding, never after.** Discarding a raw frame only lowers the frame rate; discarding an *encoded* frame breaks the decoder's reference chain and corrupts everything until the next keyframe. So a leaky queue sits upstream of the encoder, and everything downstream is lossless.
+
+**The encoder is negotiated at runtime, not assumed.** Candidates are tried hardware-first, and each is accepted only after it genuinely encodes a frame at the real capture size. This matters more than it sounds: an element can exist, expose the right property, and still fail — and the rate-control modes a driver offers are read from the GPU itself, so the same element behaves differently between machines. The winning choice is cached with a fingerprint of the GStreamer install, so a driver upgrade re-probes automatically.
+
+**A constant frame rate is manufactured downstream.** Mutter's capture is damage-driven: a display showing something static stops producing frames entirely. A `compositor` element running on its own clock supplies a steady rate at zero added latency, so motion resumes instantly instead of after a stall.
+
+**Buffering is kept deliberately shallow** — about four frames in flight, roughly 133 ms at 30 fps. A deeper queue would hide jitter, but at the cost of latency on *every* frame.
+
+---
+
+## Measured performance
+
+Encoder throughput, 120 frames of synthetic video, on a GTX 1650 Ti with an Intel UHD iGPU:
+
+| Encoder | 1280×720 | 1920×1080 | 2960×1848 |
+|---|---|---|---|
+| `nvh264enc` (NVENC) | 320 fps | 196 fps | 93 fps |
+| `x264enc` ultrafast CBR | 141 fps | 71 fps | 39 fps |
+| `x264enc` veryfast CBR | 84 fps | 48 fps | 30 fps |
+
+Other measurements from the same machine:
+
+- **USB link:** the tablet enumerates at USB 2.0 High Speed — 480 Mbit/s nominal, ~200–300 Mbit/s realistic. H.264 at 1730×1080/30 targets about 16 Mbit/s, roughly 6% of that.
+- **Uncompressed video is not viable:** raw NV12 at 2960×1848/30 is ~1.9 Gbit/s, several times what the link can carry. Compression is what makes this work at all.
+- **Encoder startup:** ~2.06 s to probe and verify cold, ~0.44 s from cache.
+
+**No end-to-end latency figure is quoted here**, because none has been measured under controlled conditions. Earlier versions of this document cited one; it was not reproducible, and it has been withdrawn rather than repeated.
+
+---
+
+## Limitations
+
+- **H.264 requires GNOME on Wayland.** The virtual display uses Mutter's private ScreenCast API. KDE, Sway and other compositors have no equivalent, and there is no cross-compositor standard for *creating* a virtual output. X11 sessions fall back to JPEG at the PC's own resolution.
+- **Touch requires GNOME on Wayland** for the same class of reason — it goes through GNOME's `RemoteDesktop` API.
+- **There is no hover.** Absolute-position pointer control cannot express "pointer here, not pressed".
+- **JPEG sends whole frames.** No inter-frame compression, so it costs far more bandwidth and CPU. It is a fallback, not a quality option.
+- **An idle session still costs CPU.** Holding a constant frame rate means running the pipeline continuously even when nothing changes — roughly half a core. Worth knowing on battery.
+- **The frame rate applies per connection.** H.264 pins it in the pipeline at connect time; changing it takes effect on the next connection.
+- **One client at a time.** A second device is answered with a busy signal.
+- **The process can crash on exit** after an H.264 session, during GStreamer/NVENC teardown. It happens after streaming has ended and does not affect the session.
+
+---
+
+## Repository layout
 
 ```
 TethrLink/
 ├── server/
-│   ├── app/
-│   │   └── main.py           # GTK4 application entry point
+│   ├── app/main.py            # GTK4 entry point
 │   ├── core/
-│   │   ├── server_core.py    # Screen capture, encode, TCP server, virtual display
-│   │   └── discovery.py      # UDP broadcast discovery
-│   └── ui/
-│       ├── window.py         # AdwApplicationWindow, 3-tab layout
-│       ├── tray.py           # pystray system tray
-│       └── style.css         # Custom GTK CSS
-├── android/                  # Kotlin Android client (Jetpack Compose)
-├── desktop/                  # .desktop launcher and app icon
-├── snap/
-│   └── snapcraft.yaml        # Snap package config
-├── docs/                     # Landing page and screenshots
-├── build_deb.sh              # Debian package builder script
-├── stdeb.cfg                 # stdeb packaging config
-└── setup.py                  # Python package metadata
+│   │   ├── server_core.py     # Capture, encode, virtual display, TCP server
+│   │   ├── encoder.py         # Vendor-neutral encoder selection + property mapping
+│   │   ├── geometry.py        # Capture-size derivation
+│   │   ├── frame_queue.py     # Lossless FIFO (H.264) and latest-wins slot (JPEG)
+│   │   ├── input_protocol.py  # Client → server input wire format
+│   │   ├── remote_input.py    # Pointer injection via GNOME RemoteDesktop
+│   │   ├── link.py            # Which peers the server will serve
+│   │   ├── settings.py        # Persisted user intent (codec, touch)
+│   │   ├── profiles.py        # Cached encoder capability and device records
+│   │   ├── metrics.py         # Stream counters
+│   │   ├── preflight.py       # Startup GStreamer/encoder diagnostics
+│   │   └── discovery.py       # UDP broadcast
+│   └── ui/window.py           # GTK4 window
+├── android/                   # Kotlin client (Compose, MediaCodec, gesture interpreter)
+├── tools/
+│   └── diagnose_capture_stall.py   # Isolates capture stalls from the rest of the pipeline
+├── tests/                     # Python unit tests
+└── docs/                      # Landing page, design specs and implementation plans
 ```
+
+Run the Python tests with `./venv/bin/python -m pytest`. The Android gesture, codec and geometry logic is pure Kotlin with no Android imports, and its tests run on the plain JVM via `./gradlew test`.
 
 ---
 
 ## Roadmap
 
-| Milestone | Feature                                    | Status      |
-|-----------|--------------------------------------------|-------------|
-| M1        | MJPEG over USB, size-prefixed TCP framing  | Done        |
-| M2        | Configurable IP / port from Android UI     | Done        |
-| M3        | GStreamer pipeline, Mutter virtual display | Done        |
-| M4        | Dynamic port scan, Material You dark theme | Done        |
-| M5        | GTK4 + Libadwaita desktop UI               | Done        |
-| M6        | Auto-discovery (UDP broadcast)             | Done        |
-| M7        | Snap & Debian packaging                    | Done        |
-| M8        | Touch input forwarding (tablet → PC mouse) | Planned     |
-| M9        | Audio forwarding over USB                  | Planned     |
-| M10       | Windows server support                     | Planned     |
+| Feature | Status |
+|---|---|
+| MJPEG over USB, length-prefixed TCP framing | Done |
+| GStreamer pipeline, Mutter virtual display | Done |
+| UDP auto-discovery, Snap and Debian packaging | Done |
+| Hardware H.264 with runtime encoder negotiation | Done (1.1.0) |
+| Device-derived display geometry | Done (1.1.0) |
+| Touch input — pointer, click, right-click, scroll | Done (2.0.0) |
+| Audio forwarding | Planned (2.1.0) |
+| Keyboard input | Planned (2.2.0) |
+| Adaptive bitrate from measured link conditions | Planned |
+| Real multi-touch and gestures | Planned |
 
 ---
 
@@ -261,10 +281,6 @@ TethrLink/
 
 **Prince Savsaviya** — [princesavsaviya2023.learning@gmail.com](mailto:princesavsaviya2023.learning@gmail.com)
 
----
-
 ## License
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE) for details.
-
-TethrLink is free to use, modify, and distribute under GPL v3. If you distribute a modified version, you must release the source under the same license.
+GNU General Public License v3.0 — see [LICENSE](LICENSE).
