@@ -5,14 +5,14 @@ plugins {
 
 android {
     namespace  = "com.tethrlink"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.tethrlink"
         minSdk        = 21
-        targetSdk     = 34
-        versionCode   = 1
-        versionName   = "1.0.0"
+        targetSdk     = 35
+        versionCode   = 4
+        versionName   = "2.0.0"
     }
 
     signingConfigs {
@@ -60,6 +60,8 @@ dependencies {
     implementation(libs.material)
     implementation(libs.androidx.constraintlayout)
     implementation(libs.kotlinx.coroutines.android)
+
+    testImplementation("junit:junit:4.13.2")
 
     // Jetpack Compose
     val composeBom = platform("androidx.compose:compose-bom:2024.02.00")

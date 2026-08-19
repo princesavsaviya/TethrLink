@@ -1,30 +1,44 @@
 package com.tethrlink
 
+import android.app.KeyguardManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.graphics.Canvas
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import android.util.Base64
 import org.json.JSONObject
+import com.tethrlink.input.GestureInterpreter
+import com.tethrlink.input.InputCodec
+import com.tethrlink.input.PointerAction
+import com.tethrlink.input.VideoGeometry
+import com.tethrlink.net.HelloMessage
 import com.tethrlink.ui.ConnectionState
 import com.tethrlink.ui.ConnectionScreen_OptionC
-// To switch to Option C, replace the two lines above with:
-// import com.tethrlink.ui.ConnectionScreen_OptionC
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -40,8 +54,8 @@ import java.net.InetSocketAddress
 import java.net.Socket
 
 /**
- * MainActivityV2 — drives ConnectionScreen_OptionA (or C) instead of the
- * four individual screens. All streaming / discovery logic is unchanged.
+ * MainActivityV2 — drives ConnectionScreen_OptionC instead of four
+ * individual screens. All streaming / discovery logic is unchanged.
  *
  * To activate: change android:name in AndroidManifest.xml to
  * ".MainActivityV2" (or swap with MainActivity there).
@@ -63,7 +77,13 @@ class MainActivityV2 : AppCompatActivity() {
     // ── Protocol magic bytes ──────────────────────────────────────────────────
     private val MAGIC_HELLO = "TLHELO".toByteArray()
     private val MAGIC_OK    = "TLOK__".toByteArray()
+    private val MAGIC_OK2   = "TLOK2_".toByteArray() // OK + server negotiated pointer input
     private val MAGIC_BUSY  = "TLBUSY".toByteArray()
+
+    // ── Touch input ───────────────────────────────────────────────────────────
+    // Polling interval for the long-press deadline: no touch event arrives
+    // while a finger rests still, so this has to be checked on a timer.
+    private val LONG_PRESS_POLL_INTERVAL_MS = 50L
 
     // ── Device identity ───────────────────────────────────────────────────────
     private val DEVICE_ID: ByteArray by lazy { getOrCreateDeviceId() }
@@ -72,6 +92,20 @@ class MainActivityV2 : AppCompatActivity() {
 
     // Single state drives all 4 setup screens — replaces the Int(1..4) flag
     private val connectionState = mutableStateOf<ConnectionState>(ConnectionState.NoUsb)
+
+    // The tablet's own USB tether address, refreshed each time Scanning is
+    // entered. Shown to the user as proof the cable/tethering half of the
+    // link is working, independent of whether a server has been found.
+    private val tetherAddressState = mutableStateOf<String?>(null)
+
+    // The last server we actually completed a handshake with, kept for the
+    // lifetime of the activity (not persisted across process death). Lets
+    // the Scanning screen offer a direct connect that bypasses discovery
+    // entirely, rather than only being tried silently after a disconnect
+    // (see startStreaming's reconnect path below).
+    private var lastKnownIp:   String? = null
+    private var lastKnownPort: Int     = DEFAULT_SERVER_PORT
+    private val hasRememberedServerState = mutableStateOf(false)
 
     // ── Screen 5: Streaming ───────────────────────────────────────────────────
     private lateinit var surfaceView:       SurfaceView
@@ -105,6 +139,64 @@ class MainActivityV2 : AppCompatActivity() {
 
     private val logLines = mutableListOf<String>()
 
+    // ── Touch input state (set up per connection, torn down on disconnect) ────
+    // Written from the streaming coroutine (IO dispatcher), read from the main
+    // thread inside the touch listener and the long-press poll — volatile for
+    // cross-thread visibility.
+    @Volatile private var inputSupported: Boolean = false
+    @Volatile private var inputOutputStream: java.io.OutputStream? = null
+    @Volatile private var gestureInterpreter: GestureInterpreter? = null
+    @Volatile private var streamWidthPx: Int = 0
+    @Volatile private var streamHeightPx: Int = 0
+    @Volatile private var streamLetterboxed: Boolean = false
+
+    // Guards the shared socket output stream so a batch of pointer actions is
+    // written as one contiguous unit rather than interleaved with another.
+    private val inputWriteLock = Object()
+
+    // True from a down that landed on video until the matching up/cancel, so a
+    // down rejected by VideoGeometry (touch on a letterbox bar) can't leave a
+    // later move/up calling into GestureInterpreter without a matching down.
+    // Volatile: reset from the streaming coroutine's teardown (IO dispatcher)
+    // but read/written from the main-thread touch listener.
+    @Volatile private var touchGestureActive = false
+
+    // ── Foreground / lock suspension (cooperative, not a security boundary —
+    // the real boundary is server-side; a modified client could ignore this) ──
+    // True whenever input must not be sent even though a session is active:
+    // backgrounded, split-screen, or the screen locked. Touched only from the
+    // main thread (lifecycle callbacks, the registered receiver, and the
+    // touch listener), so unlike the fields above these don't need @Volatile.
+    private var inputSuspended = false
+    private var isActivityResumed = false
+    private var screenOffReceiver: BroadcastReceiver? = null
+
+    // ── Back press: reveal/dismiss the streaming overlay ─────────────────────
+    // The surface has no tap-to-reveal click listener (see onCreate): a tap
+    // on the video always risks being pointer input, so it can never
+    // unambiguously mean "show the overlay" — not just while touch input is
+    // active. Back press is therefore the only way to bring the overlay back
+    // up while streaming; the overlay keeps its own tap-to-dismiss (also in
+    // onCreate) so it can still be closed once revealed. Enabled only while
+    // the streaming screen is showing (see showStreamingScreen/
+    // showConnectionState), so back keeps its normal "leave the activity"
+    // meaning everywhere else.
+    private val overlayBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            streamOverlay.visibility =
+                if (streamOverlay.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
+    }
+
+    private val inputHandler = Handler(Looper.getMainLooper())
+    private val longPressPoll = object : Runnable {
+        override fun run() {
+            val interpreter = gestureInterpreter ?: return
+            dispatchPointerActions(interpreter.checkLongPress(SystemClock.uptimeMillis()))
+            inputHandler.postDelayed(this, LONG_PRESS_POLL_INTERVAL_MS)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -112,8 +204,9 @@ class MainActivityV2 : AppCompatActivity() {
         composeUiContainer = findViewById(R.id.composeUiContainer)
         composeUiContainer.setContent {
             ConnectionScreen_OptionC(
-                // Switch to ConnectionScreen_OptionC(...) here to use Option C
                 state = connectionState.value,
+                tetherAddress = tetherAddressState.value,
+                hasRememberedServer = hasRememberedServerState.value,
                 onEnableTether = {
                     try {
                         startActivity(Intent("android.settings.TETHER_SETTINGS"))
@@ -123,6 +216,9 @@ class MainActivityV2 : AppCompatActivity() {
                 },
                 onStartExtending = {
                     discoveredIp?.let { ip -> startStreaming(ip, discoveredPort) }
+                },
+                onConnectToLastKnown = {
+                    lastKnownIp?.let { ip -> startStreaming(ip, lastKnownPort) }
                 }
             )
         }
@@ -141,19 +237,63 @@ class MainActivityV2 : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableImmersiveMode()
 
-        surfaceView.setOnClickListener { streamOverlay.visibility = View.VISIBLE }
+        // No tap-to-reveal click listener on the surface: a tap on the video
+        // must be unambiguous pointer input (when negotiated) rather than
+        // competing with revealing the overlay. See overlayBackCallback
+        // below for the (now sole) way to bring the overlay back up.
+        surfaceView.setOnTouchListener { _, event -> handleSurfaceTouch(event) }
         streamOverlay.setOnClickListener { streamOverlay.visibility = View.GONE }
         disconnectBtn.setOnClickListener {
             streamJob?.cancel()
             startStateLoop()
         }
 
+        onBackPressedDispatcher.addCallback(this, overlayBackCallback)
+
+        // Belt-and-suspenders for the lock case: onPause (below) already
+        // suspends input the moment the activity loses focus, which covers
+        // locking in the normal case, but this reacts the instant the screen
+        // actually turns off regardless of exactly how lifecycle callbacks
+        // land. ACTION_SCREEN_OFF is a protected system broadcast, so
+        // RECEIVER_NOT_EXPORTED is the correct (and required, on API 33+) flag.
+        screenOffReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) = suspendInput()
+        }
+        ContextCompat.registerReceiver(
+            this,
+            screenOffReceiver,
+            IntentFilter(Intent.ACTION_SCREEN_OFF),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+
         startStateLoop()
     }
 
     override fun onResume() {
         super.onResume()
+        isActivityResumed = true
         if (streamJob?.isActive != true) startStateLoop()
+        resumeInputIfInFront()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isActivityResumed = false
+        // Also covers onStop: Android always calls onPause before onStop, so
+        // input is already released by the time the activity is fully hidden.
+        suspendInput()
+    }
+
+    // Split-screen can change without a pause/resume in between (e.g.
+    // dragging the divider), so it needs its own hook. The 1-arg overload is
+    // deprecated in favour of the 2-arg one, but overriding this one is what
+    // actually works from API 24 onward: the platform's default 2-arg
+    // implementation (API 26+) forwards to this method, and API 24-25 —
+    // which predate the 2-arg overload — call this one directly.
+    @Suppress("DEPRECATION")
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode)
+        if (isInMultiWindowMode) suspendInput() else resumeInputIfInFront()
     }
 
     // ── State loop ────────────────────────────────────────────────────────────
@@ -184,10 +324,17 @@ class MainActivityV2 : AppCompatActivity() {
     // Shows one of the 4 setup states inside the Compose UI.
     private suspend fun showConnectionState(state: ConnectionState) = withContext(Dispatchers.Main) {
         connectionState.value = state
+        // Refresh the diagnostic-only state Scanning displays. Computed here
+        // rather than continuously so it stays cheap: it only needs to be
+        // current at the moment the user is looking at the Scanning screen.
+        if (state == ConnectionState.Scanning) {
+            tetherAddressState.value = getUsbTetherAddress()
+        }
         composeUiContainer.visibility = View.VISIBLE
         surfaceView.visibility        = View.GONE
         fpsPill.visibility            = View.GONE
         streamOverlay.visibility      = View.GONE
+        overlayBackCallback.isEnabled = false
     }
 
     // Hides Compose UI and shows the native SurfaceView for streaming.
@@ -196,6 +343,7 @@ class MainActivityV2 : AppCompatActivity() {
         surfaceView.visibility        = View.VISIBLE
         fpsPill.visibility            = View.GONE
         streamOverlay.visibility      = View.GONE
+        overlayBackCallback.isEnabled = true
     }
 
     // ── USB / tethering detection ─────────────────────────────────────────────
@@ -219,6 +367,30 @@ class MainActivityV2 : AppCompatActivity() {
                         .any { !it.isLoopbackAddress }
                 } ?: false
         } catch (_: Exception) { false }
+    }
+
+    // Same interface walk as isUsbTetherActive(), but returns the tablet's
+    // own address on that interface instead of just a yes/no. Lets the
+    // Scanning screen show proof the cable/tethering half of the link is
+    // genuinely up, independent of whether a server has been discovered.
+    private fun getUsbTetherAddress(): String? {
+        return try {
+            java.net.NetworkInterface.getNetworkInterfaces()
+                ?.asSequence()
+                ?.filter { iface ->
+                    iface.isUp && !iface.isLoopback &&
+                    (iface.name.startsWith("rndis") ||
+                     iface.name.startsWith("usb")   ||
+                     iface.name.startsWith("ncm"))
+                }
+                ?.flatMap { iface ->
+                    iface.inetAddresses.asSequence()
+                        .filterIsInstance<java.net.Inet4Address>()
+                        .filter { !it.isLoopbackAddress }
+                }
+                ?.firstOrNull()
+                ?.hostAddress
+        } catch (_: Exception) { null }
     }
 
     private fun isUsbTetherIp(ip: String): Boolean {
@@ -392,8 +564,9 @@ class MainActivityV2 : AppCompatActivity() {
                 val screenDims = java.nio.ByteBuffer.allocate(8)
                     .putInt(screenW).putInt(screenH).array()
 
-                socket.getOutputStream().write(MAGIC_HELLO + DEVICE_ID + screenDims + deviceName)
-                socket.getOutputStream().flush()
+                val outStream = socket.getOutputStream()
+                outStream.write(HelloMessage.build(MAGIC_HELLO, DEVICE_ID, screenDims, deviceName, InputCodec.EXT_BLOCK))
+                outStream.flush()
 
                 val responseHeader = ByteArray(6)
                 input.readFully(responseHeader)
@@ -409,9 +582,27 @@ class MainActivityV2 : AppCompatActivity() {
                         }
                         return@launch
                     }
-                    !responseHeader.contentEquals(MAGIC_OK) ->
-                        throw Exception("Unexpected server response")
+                    // Input negotiated: the server saw our extension block and has
+                    // touch enabled. Anything else (including a plain MAGIC_OK)
+                    // means the server never reads input, so none must be sent.
+                    responseHeader.contentEquals(MAGIC_OK2) -> {
+                        inputSupported    = true
+                        inputOutputStream = outStream
+                    }
+                    responseHeader.contentEquals(MAGIC_OK) -> {
+                        inputSupported    = false
+                        inputOutputStream = null
+                    }
+                    else -> throw Exception("Unexpected server response")
                 }
+
+                // A real handshake just completed, so this address is proven
+                // reachable — remember it for the "Connect to last known
+                // server" action on a future stuck scan, independent of the
+                // reconnect-only autoConnectIp path below.
+                lastKnownIp   = ip
+                lastKnownPort = port
+                withContext(Dispatchers.Main) { hasRememberedServerState.value = true }
 
                 withContext(Dispatchers.Main) {
                     lockToLandscape()
@@ -460,6 +651,28 @@ class MainActivityV2 : AppCompatActivity() {
                     kotlinx.coroutines.withTimeout(SURFACE_TIMEOUT_MS) { surfaceReady.await() }
                 }
 
+                // Only wire up touch once the server has actually negotiated
+                // support — otherwise gestureInterpreter stays null and the
+                // touch listener is simply a no-op (the surface has no
+                // tap-to-reveal click listener to fall back to any more; the
+                // overlay is reached via back press instead, see
+                // overlayBackCallback).
+                withContext(Dispatchers.Main) {
+                    streamWidthPx     = streamW
+                    streamHeightPx    = streamH
+                    streamLetterboxed = (codecId != 1) // 1 = H.264 (fills view), else JPEG (letterboxed)
+                    gestureInterpreter = if (inputSupported) {
+                        val slopPx  = ViewConfiguration.get(this@MainActivityV2).scaledTouchSlop.toFloat()
+                        val widthPx = surfaceView.width.takeIf { it > 0 } ?: 1
+                        GestureInterpreter(
+                            longPressMs = ViewConfiguration.getLongPressTimeout().toLong(),
+                            touchSlopPx = slopPx / widthPx,
+                        )
+                    } else {
+                        null
+                    }
+                }
+
                 val latestBitmap = java.util.concurrent.atomic.AtomicReference<android.graphics.Bitmap?>()
                 val decoder = StreamDecoder(
                     surface  = surface,
@@ -506,6 +719,15 @@ class MainActivityV2 : AppCompatActivity() {
             } catch (e: Exception) {
                 // Ignore silent timeouts during recovery
             } finally {
+                // Tear down touch state with the connection: no button must be
+                // left "held" from this session, and no stale interpreter or
+                // output stream must survive into the next one.
+                inputSupported     = false
+                inputOutputStream  = null
+                gestureInterpreter = null
+                touchGestureActive = false
+                inputHandler.removeCallbacks(longPressPoll)
+
                 if (isUsbTetherActive()) {
                     withContext(Dispatchers.Main) { unlockOrientation() }
                     showConnectionState(ConnectionState.Scanning)
@@ -538,6 +760,155 @@ class MainActivityV2 : AppCompatActivity() {
             canvas.drawBitmap(bitmap, null, dst, null)
         } finally {
             holder.unlockCanvasAndPost(canvas)
+        }
+    }
+
+    // ── Touch input ───────────────────────────────────────────────────────────
+    //
+    // `gestureInterpreter` is null whenever the server hasn't negotiated input
+    // (old server, or the user's touch toggle is off), so every branch below
+    // returns `false` in that case — the event is simply left unconsumed
+    // (the surface has no click listener to fall back to; the overlay is
+    // reached via back press while streaming, see overlayBackCallback).
+
+    private fun handleSurfaceTouch(event: MotionEvent): Boolean {
+        val interpreter = gestureInterpreter ?: return false
+        // Suspended (backgrounded, split-screen, or locked): don't start or
+        // continue a gesture. Anything that was held has already been
+        // released by suspendInput(); returning false here just leaves the
+        // tap unconsumed, same as when input was never negotiated in the
+        // first place.
+        if (inputSuspended) return false
+        val viewW = surfaceView.width
+        val viewH = surfaceView.height
+        if (viewW <= 0 || viewH <= 0) return false
+
+        val nowMs = event.eventTime // SystemClock.uptimeMillis() time base
+
+        fun normalisedAt(index: Int) = VideoGeometry.normalise(
+            event.getX(index), event.getY(index),
+            viewW, viewH,
+            streamWidthPx, streamHeightPx,
+            streamLetterboxed,
+        )
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                // A down landing on a letterbox bar is not a touch on the
+                // desktop (see VideoGeometry) — don't start a gesture for it,
+                // so a later move/up for this same pointer is also ignored
+                // below instead of being fed to an interpreter that never saw
+                // the matching down.
+                val p = normalisedAt(0)
+                if (p == null) {
+                    touchGestureActive = false
+                    return false
+                }
+                touchGestureActive = true
+                inputHandler.removeCallbacks(longPressPoll)
+                dispatchPointerActions(interpreter.onDown(p.x, p.y, nowMs))
+                inputHandler.postDelayed(longPressPoll, LONG_PRESS_POLL_INTERVAL_MS)
+            }
+
+            MotionEvent.ACTION_MOVE,
+            MotionEvent.ACTION_POINTER_DOWN,
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (!touchGestureActive) return false
+                // Track pointer 0 for position; a finger that has strayed onto
+                // a letterbox bar simply stops updating position until it
+                // returns, rather than releasing or desyncing state.
+                val p = normalisedAt(0) ?: return true
+                dispatchPointerActions(interpreter.onMove(p.x, p.y, nowMs, event.pointerCount))
+            }
+
+            MotionEvent.ACTION_UP -> {
+                if (!touchGestureActive) return false
+                touchGestureActive = false
+                inputHandler.removeCallbacks(longPressPoll)
+                dispatchPointerActions(interpreter.onUp(nowMs))
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                val wasActive = touchGestureActive
+                touchGestureActive = false
+                inputHandler.removeCallbacks(longPressPoll)
+                if (!wasActive) return false
+                dispatchPointerActions(interpreter.onCancel())
+            }
+
+            else -> return false
+        }
+        return true
+    }
+
+    /**
+     * Encodes and sends a batch of [PointerAction]s as one contiguous write.
+     * Batching (rather than one write per action) keeps e.g. a down's
+     * move-then-press pair from being interleaved with another batch on the
+     * shared stream.
+     *
+     * The actual write is dispatched onto [ioScope] (IO dispatcher) rather
+     * than performed inline, so a stalled socket — however unlikely once the
+     * server has confirmed it reads input — blocks a background thread, never
+     * the main thread that also drives the video render loop.
+     */
+    private fun dispatchPointerActions(actions: List<PointerAction>) {
+        if (actions.isEmpty() || !inputSupported) return
+        val out = inputOutputStream ?: return
+        val frames = actions.map { action ->
+            when (action) {
+                is PointerAction.Move   -> InputCodec.motion(action.x, action.y)
+                is PointerAction.Button -> InputCodec.button(action.button, action.pressed)
+                is PointerAction.Scroll -> InputCodec.axis(action.dx, action.dy)
+            }
+        }
+        ioScope.launch {
+            try {
+                synchronized(inputWriteLock) {
+                    for (frame in frames) out.write(frame)
+                    out.flush()
+                }
+            } catch (_: Exception) {
+                // An input write failure must never take the video path down
+                // with it. Video is the product; input is an addition.
+            }
+        }
+    }
+
+    // ── Foreground / lock suspension ─────────────────────────────────────────
+
+    private fun isScreenLocked(): Boolean =
+        (getSystemService(KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked ?: false
+
+    private fun isInMultiWindowModeCompat(): Boolean =
+        android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N && isInMultiWindowMode
+
+    /**
+     * Releases anything held and clears gesture state, so a button is never
+     * left down on the PC just because the app stopped being in front. Safe
+     * to call at any time, session or no session: with no interpreter
+     * ([gestureInterpreter] null) it degrades to just setting the flag and
+     * cancelling the poll, and [GestureInterpreter.onCancel] itself is a
+     * no-op when nothing is held.
+     */
+    private fun suspendInput() {
+        inputSuspended = true
+        inputHandler.removeCallbacks(longPressPoll)
+        touchGestureActive = false
+        val interpreter = gestureInterpreter ?: return
+        dispatchPointerActions(interpreter.onCancel())
+    }
+
+    /**
+     * Lifts the suspension, but only if the activity is genuinely in front
+     * right now. Called from more than one lifecycle hook, each of which only
+     * knows about its own cause — this re-checks all three so that clearing
+     * one (e.g. the lock screen) can't override another that's still true
+     * (e.g. still in split-screen).
+     */
+    private fun resumeInputIfInFront() {
+        if (isActivityResumed && !isInMultiWindowModeCompat() && !isScreenLocked()) {
+            inputSuspended = false
         }
     }
 
@@ -593,5 +964,8 @@ class MainActivityV2 : AppCompatActivity() {
         streamJob?.cancel()
         listenJob?.cancel()
         ioScope.cancel()
+        inputHandler.removeCallbacks(longPressPoll)
+        screenOffReceiver?.let { unregisterReceiver(it) }
+        screenOffReceiver = null
     }
 }

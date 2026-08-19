@@ -112,3 +112,63 @@ hand-copied snapshot in `debian_build/` that has drifted from source, and
 `frame_queue.py`, `metrics.py` and `preflight.py` are absent from it entirely.
 None of this work would reach users. The `.deb` also under-declares its
 dependencies — see spec §7 Phase 5.
+
+---
+
+# Touch Input (2.0.0) — Server-Side Verification
+
+**Date:** 2026-08-18
+**Branch:** `feature/touch-and-audio`
+**Unit tests:** 287 passing (163 at the start of this work)
+
+## Automated — all passing
+
+| Check | Result |
+|---|---|
+| Full suite | 287 passed |
+| Tether subnet / broadcast | `192.168.42.0/24` → `192.168.42.255` |
+| Real tablet address served | `192.168.42.129` → **True** |
+| Loopback served (local tooling) | `127.0.0.1` → **True** |
+| **This machine's Wi-Fi refused** | `10.0.0.193` → **False** |
+| Lookalike subnet refused | `192.168.43.1` → **False** |
+| `TETHRLINK_TETHER_SUBNET=0.0.0.0/0` | rejected, warned, falls back to default; `10.0.0.193` still **False** |
+| Touch default | **off** |
+| Codec / fps defaults | H.264 / 30 |
+| `TETHRLINK_TOUCH` 1 / 0 / garbage | on / off / ignored with warning |
+| Orphaned D-Bus sessions at rest | ScreenCast 0, RemoteDesktop 0 |
+
+## Verified live during implementation
+
+- **A LAN peer is genuinely refused** — the server logged
+  `Rejected connection from non-tether peer 10.0.0.193` against a real connection.
+- **Pointer movement is pixel-accurate** — captured frames show the cursor within
+  ~1px of each commanded position on the virtual display.
+- **Handshake compatibility**, with real bytes: no extension → `TLOK__` and a
+  legacy client still streamed real H.264 frames; extension + touch on →
+  `TLOK2_`; extension + touch off → `TLOK__`. The `(w,h,codec)` struct is
+  byte-identical in every case.
+- **The security gate is structural** — with touch off, zero RemoteDesktop
+  sessions exist on the bus while a client advertising input is connected; with
+  it on, exactly one appears, and it is cleaned up on disconnect either way.
+- **Sessions are not leaked** after a paired teardown, confirmed by introspecting
+  both D-Bus paths against real Mutter.
+
+## Still requires hardware — the Android client does not exist yet
+
+Nothing below can be checked until the client plan lands, because no released
+client speaks the input protocol:
+
+- End-to-end touch from a real finger on the tablet
+- Tap-to-click, long-press right-click, two-finger scroll
+- Coordinate accuracy against the *rendered* video rectangle, which differs
+  between codecs: H.264 fills the panel, JPEG letterboxes
+- Perceived input latency
+- That video is unaffected while input flows under real use
+
+## Known gaps
+
+- The pairing-failure fallback (ScreenCast pairing succeeding, then a later step
+  failing) is unit-tested against fakes but was never triggered against real
+  Mutter, since pairing always succeeded.
+- Input pairing is Wayland-only. X11 sessions get video only, and the UI
+  correctly reports input as inactive there.

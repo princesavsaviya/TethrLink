@@ -31,15 +31,18 @@ import androidx.compose.ui.unit.sp
 import com.tethrlink.R
 import kotlinx.coroutines.delay
 
-// Uses ConnectionState sealed class defined in ConnectionScreen_OptionA.kt (same package).
+// ConnectionState is defined in ConnectionState.kt (same package).
 // All 4 states are represented as expanding step cards.
 // The active step expands to show its full visualization and controls.
 
 @Composable
 fun ConnectionScreen_OptionC(
     state: ConnectionState,
+    tetherAddress: String?,
+    hasRememberedServer: Boolean,
     onEnableTether: () -> Unit,
-    onStartExtending: () -> Unit
+    onStartExtending: () -> Unit,
+    onConnectToLastKnown: () -> Unit
 ) {
     // Derived step flags
     val step1Done = state != ConnectionState.NoUsb
@@ -53,6 +56,13 @@ fun ConnectionScreen_OptionC(
 
     var pulseState by remember { mutableStateOf(0) }
     var logMessages by remember { mutableStateOf(listOf("USB tethering active...", "Starting broadcast listener...")) }
+
+    // Guidance only earns its place once scanning has had a real chance to
+    // succeed on its own — showing it instantly would just be noise, and an
+    // elapsed-time counter would imply that waiting longer helps, which it
+    // doesn't. A flat delay before the one actionable hint is the honest
+    // middle ground.
+    var showScanGuidance by remember { mutableStateOf(false) }
 
     val resolutions = remember { listOf("1920×1080", "2560×1440", "3840×2160", "1280×720") }
     val refreshRates = remember { listOf("60 Hz", "120 Hz", "144 Hz") }
@@ -84,6 +94,13 @@ fun ConnectionScreen_OptionC(
                 "No server found yet, retrying..."
             )
             for (msg in extras) { delay(1800); logMessages = (logMessages + msg).takeLast(4) }
+        }
+    }
+    LaunchedEffect(state) {
+        showScanGuidance = false
+        if (state == ConnectionState.Scanning) {
+            delay(6000)
+            showScanGuidance = true
         }
     }
 
@@ -255,6 +272,24 @@ fun ConnectionScreen_OptionC(
                             }
                         }
                     }
+                    // Tether address — proves the cable/tethering half of the
+                    // link is genuinely working, independent of whether a
+                    // server has been found yet. Shown as soon as it's known
+                    // (not delayed like the guidance below): it's a fact
+                    // about the current state, not an escalation.
+                    if (tetherAddress != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                                .background(Color(0xFF4ADE80).copy(0.08f), RoundedCornerShape(10.dp))
+                                .border(1.dp, Color(0xFF4ADE80).copy(0.2f), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(Modifier.size(7.dp).background(Color(0xFF4ADE80), CircleShape))
+                            Spacer(Modifier.width(8.dp))
+                            Text("USB connected · $tetherAddress", color = Color(0xFF86EFAC), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
                     // Terminal log
                     Column(
                         modifier = Modifier.fillMaxWidth()
@@ -273,6 +308,40 @@ fun ConnectionScreen_OptionC(
                         }
                         Text("▋", color = Color(0xFF6366F1).copy(0.6f), fontSize = 10.sp, modifier = Modifier.alpha(if (cursorBlink > 0.5f) 1f else 0f))
                     }
+
+                    // Escalation: the most likely cause of a stuck scan, and
+                    // (if we have one) a direct way around a discovery
+                    // beacon that isn't getting through. Held back a few
+                    // seconds so it reads as help, not noise.
+                    AnimatedVisibility(
+                        visible = showScanGuidance,
+                        enter = fadeIn(tween(500)) + expandVertically(tween(500), expandFrom = Alignment.Top),
+                        exit = fadeOut(tween(200))
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(top = 14.dp)) {
+                            Text(
+                                "Make sure TethrLink is running on your computer and you've pressed Start Server.",
+                                color = Color.White.copy(0.5f),
+                                fontSize = 12.sp,
+                                lineHeight = 18.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (hasRememberedServer) {
+                                Spacer(Modifier.height(12.dp))
+                                Box(
+                                    modifier = Modifier.fillMaxWidth()
+                                        .border(1.dp, Color(0xFF6366F1).copy(0.4f), RoundedCornerShape(12.dp))
+                                        .clickable { onConnectToLastKnown() }
+                                        .padding(14.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("Connect to Last Known Server", color = Color(0xFFA5B4FC), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+
                     Spacer(Modifier.height(16.dp))
                 }
 
@@ -461,13 +530,22 @@ private fun ConnInfoRow_C(label: String, value: String) {
 // ── Previews ─────────────────────────────────────────────────────────────────
 
 @Preview(showBackground = true, backgroundColor = 0xFF070714)
-@Composable fun PreviewConnC_NoUSB() = ConnectionScreen_OptionC(ConnectionState.NoUsb, {}, {})
+@Composable fun PreviewConnC_NoUSB() = ConnectionScreen_OptionC(
+    ConnectionState.NoUsb, tetherAddress = null, hasRememberedServer = false, {}, {}, {}
+)
 
 @Preview(showBackground = true, backgroundColor = 0xFF070714)
-@Composable fun PreviewConnC_TetherOff() = ConnectionScreen_OptionC(ConnectionState.TetherOff, {}, {})
+@Composable fun PreviewConnC_TetherOff() = ConnectionScreen_OptionC(
+    ConnectionState.TetherOff, tetherAddress = null, hasRememberedServer = false, {}, {}, {}
+)
 
 @Preview(showBackground = true, backgroundColor = 0xFF070714)
-@Composable fun PreviewConnC_Scanning() = ConnectionScreen_OptionC(ConnectionState.Scanning, {}, {})
+@Composable fun PreviewConnC_Scanning() = ConnectionScreen_OptionC(
+    ConnectionState.Scanning, tetherAddress = "10.125.32.147", hasRememberedServer = true, {}, {}, {}
+)
 
 @Preview(showBackground = true, backgroundColor = 0xFF070714)
-@Composable fun PreviewConnC_ServerFound() = ConnectionScreen_OptionC(ConnectionState.ServerFound("prince-desktop", "192.168.42.129", "Linux x86_64"), {}, {})
+@Composable fun PreviewConnC_ServerFound() = ConnectionScreen_OptionC(
+    ConnectionState.ServerFound("prince-desktop", "192.168.42.129", "Linux x86_64"),
+    tetherAddress = "10.125.32.147", hasRememberedServer = true, {}, {}, {}
+)

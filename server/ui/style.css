@@ -1,183 +1,181 @@
-/* TethrLink GTK4 Dark Theme */
+/* ── Adwaita named colours ────────────────────────────────────────────────────
+ * Adwaita derives every widget state — hover, selection, popovers, dropdown
+ * lists — from these. Overriding individual selectors instead loses to
+ * Adwaita's own defaults in exactly the places that matter most: a combo
+ * row's popover was rendering with Adwaita's bright accent and its own
+ * foreground, leaving the text unreadable. Defining the source colours fixes
+ * all of those states at once, and keeps them inside the Android palette.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+@define-color window_bg_color    #0F0F1A;
+@define-color window_fg_color    #FFFFFF;
+@define-color view_bg_color      #1A1A2E;
+@define-color view_fg_color      #FFFFFF;
+@define-color card_bg_color      #1A1A2E;
+@define-color card_fg_color      #FFFFFF;
+@define-color popover_bg_color   #1A1A2E;
+@define-color popover_fg_color   #FFFFFF;
+@define-color headerbar_bg_color #141426;
+@define-color headerbar_fg_color #FFFFFF;
+@define-color dialog_bg_color    #1A1A2E;
+@define-color dialog_fg_color    #FFFFFF;
+
+/* Accent. accent_fg_color is what sits ON the accent, so it must stay light
+ * or selected text disappears — the exact symptom seen in the dropdown. */
+@define-color accent_bg_color    #7C6AF7;
+@define-color accent_fg_color    #FFFFFF;
+@define-color accent_color       #A594F9;
+
+@define-color success_color      #4ADE80;
+@define-color warning_color      #EAB308;
+@define-color error_color        #EF4444;
+@define-color destructive_color  #EF4444;
+
+/* Alpha-based, so one value works on every surface. */
+@define-color borders            #FFFFFF1A;
+
+/* TethrLink GTK4 + Libadwaita Dark Theme
+ *
+ * Palette mirrors the Android app's (Android is the source of truth: it's
+ * the surface the user actually looks at, and its alpha-based text/border
+ * colors scale across surfaces better than fixed greys would). Adwaita's
+ * own rows/lists/banner default to a light theme regardless of the
+ * color-scheme forced in window.py, so those need colors of their own
+ * here — everything below is drawn from the same eight values.
+ *
+ *   bg_primary     #0F0F1A
+ *   bg_card        #1A1A2E
+ *   border_default #FFFFFF1A  (alpha, so it works on any surface)
+ *   text_primary   #FFFFFF
+ *   text_secondary #FFFFFF99
+ *   brand          #7C6AF7
+ *   brand_pressed  #6455D4
+ *   success        #4ADE80
+ *   warning        #EAB308
+ */
 
 window {
-    background-color: #0d1117;
-    color: #e6edf3;
+    background-color: #0F0F1A;
+    color: #FFFFFF;
 }
 
-/* ── Scrolled container ─────────────────────────────────────────────────────── */
+/* ── Header bar ─────────────────────────────────────────────────────────────── */
 
-.main-scroll {
-    background-color: #0d1117;
+headerbar {
+    background-color: #1A1A2E;
+    border-bottom: 1px solid #FFFFFF1A;
+    color: #FFFFFF;
 }
 
-.main-scroll > viewport {
-    background-color: #0d1117;
-}
-
-/* ── Welcome / Stopped state ────────────────────────────────────────────────── */
-
-.welcome-box {
-    padding: 60px 40px;
-}
-
-.app-logo {
-    font-size: 48px;
-    font-weight: 800;
-    color: #7c3aed;
-    letter-spacing: -1px;
-}
-
-.app-logo-sub {
-    font-size: 13px;
-    color: #6e7681;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    margin-top: 4px;
-}
-
-.welcome-title {
-    font-size: 28px;
+.app-title {
     font-weight: 700;
-    color: #e6edf3;
-    margin-top: 32px;
 }
 
-.welcome-subtitle {
-    font-size: 15px;
-    color: #8b949e;
-    margin-top: 12px;
-    line-height: 1.6;
+/* ── Adwaita rows/lists: match the card surface, not Adwaita's own light grey ── */
+
+preferencesgroup > box > label {
+    color: #FFFFFF99;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+}
+
+row.activatable:hover {
+    background-color: #FFFFFF1A;   /* border_default — a 10% white wash */
+    color: #FFFFFF;                /* never let hover dim the label */
+}
+
+listview, list, row {
+    background-color: #1A1A2E;
+    color: #FFFFFF;
+}
+
+list {
+    border: 1px solid #FFFFFF1A;
+    border-radius: 12px;
+}
+
+row > box > label.subtitle {
+    color: #FFFFFF99;
+    font-size: 12px;
+}
+
+/* ── Hero text (idle / waiting / streaming headlines) ─────────────────────────── */
+
+.hero-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: #FFFFFF;
+}
+
+.hero-sub {
+    color: #FFFFFF99;
+    font-size: 13px;
+}
+
+.hero-ok {
+    color: #4ADE80;
+}
+
+.hero-warn {
+    color: #EAB308;
+}
+
+/* ── Stat cards (streaming state) ──────────────────────────────────────────────── */
+
+.stat-card {
+    background-color: #1A1A2E;
+    border: 1px solid #FFFFFF1A;
+    border-radius: 12px;
+}
+
+.stat-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: #FFFFFF;
+}
+
+.stat-label {
+    font-size: 11px;
+    color: #FFFFFF99;
+    letter-spacing: 0.3px;
 }
 
 /* ── Buttons ────────────────────────────────────────────────────────────────── */
 
-.btn-start {
-    background-color: #7c3aed;
+.pill-primary {
+    background-image: none;
+    background-color: #7C6AF7;
     color: #ffffff;
-    font-size: 15px;
-    font-weight: 600;
-    border-radius: 10px;
-    padding: 12px 40px;
     border: none;
-    margin-top: 36px;
-    transition: background-color 150ms ease;
-}
-
-.btn-start:hover {
-    background-color: #6d28d9;
-}
-
-.btn-start:active {
-    background-color: #5b21b6;
-}
-
-.btn-stop {
-    background-color: #1a1f2e;
-    color: #f87171;
-    font-size: 14px;
+    border-radius: 999px;
+    padding: 10px 30px;
     font-weight: 600;
-    border-radius: 10px;
-    padding: 11px 36px;
-    border: 1px solid #3d2626;
-    margin-top: 12px;
-    transition: background-color 150ms ease, border-color 150ms ease;
 }
 
-.btn-stop:hover {
-    background-color: #2d1515;
-    border-color: #f87171;
+.pill-primary:hover {
+    background-color: #6455D4;
 }
 
-.btn-apply {
-    background-color: #7c3aed;
-    color: #ffffff;
-    font-size: 13px;
-    font-weight: 600;
-    border-radius: 8px;
-    padding: 8px 20px;
-    border: none;
-    transition: background-color 150ms ease;
+.pill-quiet {
+    background-image: none;
+    background-color: transparent;
+    color: #FFFFFF99;
+    border: 1px solid #FFFFFF1A;
+    border-radius: 999px;
+    padding: 8px 24px;
 }
 
-.btn-apply:hover {
-    background-color: #6d28d9;
+.pill-quiet:hover {
+    color: #EAB308;
+    border-color: #EAB308;
 }
 
-.btn-apply:disabled {
-    background-color: #21262d;
-    color: #484f58;
-    border: 1px solid #30363d;
-}
+/* ── Banner (streaming health warning) ─────────────────────────────────────────── */
 
-/* ── Section cards ──────────────────────────────────────────────────────────── */
-
-.section-card {
-    background-color: #161b22;
-    border: 1px solid #21262d;
+banner > revealer > widget {
+    background-color: #1A1A2E;
+    border: 1px solid #EAB308;
     border-radius: 12px;
-    padding: 20px;
-    margin: 0 20px 16px 20px;
-}
-
-/* ── Settings rows ──────────────────────────────────────────────────────────── */
-
-.setting-name {
-    font-size: 14px;
-    color: #e6edf3;
-    font-weight: 500;
-}
-
-.setting-hint {
-    font-size: 12px;
-    color: #6e7681;
-    margin-top: 2px;
-}
-
-.codec-dropdown {
-    background-color: #21262d;
-    color: #e6edf3;
-    font-size: 13px;
-    font-weight: 500;
-    border-radius: 8px;
-    border: 1px solid #30363d;
-    padding: 4px 8px;
-}
-
-.codec-dropdown:disabled {
-    background-color: #161b22;
-    color: #484f58;
-    border-color: #21262d;
-}
-
-/* ── Status bar (running state header) ──────────────────────────────────────── */
-
-.status-bar {
-    background-color: #161b22;
-    border-bottom: 1px solid #21262d;
-    padding: 10px 20px;
-}
-
-.status-dot {
-    font-size: 10px;
-}
-
-.status-dot.connected {
-    color: #3fb950;
-}
-
-.status-dot.idle {
-    color: #f0883e;
-}
-
-.status-text {
-    font-size: 13px;
-    color: #8b949e;
-    font-weight: 500;
-}
-
-.status-fps {
-    font-size: 13px;
-    color: #3fb950;
-    font-weight: 600;
+    color: #FFFFFF;
 }

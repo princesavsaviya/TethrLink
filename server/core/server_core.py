@@ -6,13 +6,14 @@ Used by both app.py (GUI) and the CLI shim (tethrlink_server.py).
 
 import logging
 import os
+import select
 import socket
 import struct
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 import dbus
 import dbus.mainloop.glib
@@ -27,6 +28,7 @@ except (ValueError, ImportError):
     GstVideo = None
 
 from .discovery import DiscoveryBroadcaster
+from server.core.link import TETHER_SUBNET, is_tether_peer
 from server.core.profiles import ProfileStore
 from server.core.preflight import (
     H264_ENCODER_CANDIDATES,
@@ -36,6 +38,23 @@ from server.core.preflight import (
 from server.core.frame_queue import EncodedFrameQueue, LatestFrameSlot
 from server.core.geometry import is_plausible_size, resolve_capture_size
 from server.core.metrics import StreamMetrics
+from server.core.remote_input import (
+    RemoteInput,
+    RD_BUS,
+    RD_PATH,
+    RD_SES_IF,
+    dispose_remote_desktop_session,
+)
+from server.core.input_protocol import (
+    InputMessage,
+    MSG_POINTER_AXIS,
+    MSG_POINTER_BUTTON,
+    MSG_POINTER_MOTION,
+    decode_axis,
+    decode_button,
+    decode_motion,
+    parse_messages,
+)
 from server.core.encoder import (
     CANDIDATES,
     CQP_PROPERTY,
@@ -62,6 +81,14 @@ CODEC_JPEG = 2
 
 # ── Timing constants ──────────────────────────────────────────────────────────
 HANDSHAKE_TIMEOUT_S     = 10.0
+# A legacy client sends nothing after the 94-byte hello and immediately blocks
+# waiting for our reply, so this must stay well under HANDSHAKE_TIMEOUT_S — if
+# it did not, every legacy connection (the common case today) would eat a
+# multi-second stall for an extension block that will never arrive. 0.2s is
+# long enough for a same-host/USB-tethered peer's extension bytes (sent
+# immediately after the hello, on the same write or the next one) to already
+# be sitting in the kernel receive buffer by the time we ask for them.
+EXTENSION_READ_TIMEOUT_S = 0.2
 FRAME_WAIT_ATTEMPTS     = 100
 FRAME_WAIT_SLEEP_S      = 0.05
 CAPTURE_INIT_SLEEP_S    = 0.5
@@ -105,10 +132,314 @@ MUTTER_STR_IF = "org.gnome.Mutter.ScreenCast.Stream"
 
 MAGIC_HELLO = b"TLHELO"
 MAGIC_OK    = b"TLOK__"
+MAGIC_OK2   = b"TLOK2_"  # MAGIC_OK, but input was negotiated. Exactly 6 bytes
+                         # like MAGIC_OK — the client reads a fixed 6-byte
+                         # header and then a fixed 9-byte (w, h, codec) struct
+                         # regardless of which magic it got, so the length and
+                         # layout of the reply must never change; only this
+                         # value differs. See the extension block below for
+                         # how a client advertises that it wants MAGIC_OK2.
 MAGIC_BUSY  = b"TLBUSY"
+
+# ── Input-capability extension (optional, appended by new clients only) ───────
+# A client that wants pointer/touch input appends this small, versioned,
+# self-describing block directly after the existing 94-byte hello:
+#
+#   offset  size  field        meaning
+#   0       4     marker       b"TLX1" — extension format version 1
+#   4       1     cap_len      u8, number of capability bytes that follow
+#   5       cap_len  capability  bitfield; bit 0 (CAP_POINTER_INPUT) = client
+#                                wants pointer input
+#
+# This is safe against every released server: they call `conn.recv(94)` once
+# and never read the client again, so these extra bytes just sit unread in
+# the kernel socket buffer and are discarded along with the connection.
+# A server that understands the extension reads the header, then reads
+# exactly `cap_len` more bytes — never more, never fewer — so nothing is
+# left over on the wire to be misread as the first input message on the
+# same connection. `cap_len` is what makes the block self-describing: a
+# future version can grow the capability payload and an older server that
+# only inspects byte 0 still consumes the whole block correctly.
+EXT_MARKER        = b"TLX1"
+EXT_HEADER_LEN     = len(EXT_MARKER) + 1  # marker + cap_len byte
+CAP_POINTER_INPUT  = 0x01
 
 FALLBACK_WIDTH  = 1920
 FALLBACK_HEIGHT = 1080
+
+
+# ── Extension parsing (testable without network) ───────────────────────────────
+
+def parse_input_extension(header: bytes, payload: bytes) -> bool:
+    """Parse input-capability extension block and return whether input is advertised.
+
+    Pure function, no socket operations. Takes the bytes already read and
+    determines whether the client advertised pointer input support. Never raises
+    — all malformed blocks degrade to "no input support" rather than propagating
+    an exception into the connection handler.
+
+    Args:
+        header: The 5-byte extension header (marker + cap_len), or b"" if not read.
+        payload: The capability bytes (exactly cap_len of them), or b"" if not read.
+
+    Returns:
+        True if the extension is well-formed and the capability byte has
+        CAP_POINTER_INPUT bit set. False for any malformed/missing extension.
+    """
+    try:
+        # Header must be exactly EXT_HEADER_LEN bytes (5: "TLX1" + cap_len).
+        if len(header) != EXT_HEADER_LEN:
+            return False
+
+        # Header must start with the marker.
+        if header[:len(EXT_MARKER)] != EXT_MARKER:
+            return False
+
+        # Extract the declared payload length from the cap_len byte.
+        cap_len = header[len(EXT_MARKER)]
+
+        # cap_len of 0 means no capability bytes follow — nothing to check.
+        if cap_len == 0:
+            return False
+
+        # Payload must be exactly the declared length (never more, never fewer).
+        # This ensures nothing is left on the wire for the input reader to
+        # misinterpret as the first input message.
+        if len(payload) != cap_len:
+            return False
+
+        # Capability byte is the first byte of the payload. Check bit 0.
+        return bool(payload[0] & CAP_POINTER_INPUT)
+
+    except Exception:
+        # No input can make this raise: indexing, bitwise operations, len()
+        # all fail gracefully. Catch any unforeseen exception and degrade
+        # to "no input support" rather than breaking the connection.
+        return False
+
+
+# ── Input reading (Task 5) ────────────────────────────────────────────────────
+# Consumes input_protocol.py's framing/decoders (Task 2) and drives the
+# pointer through remote_input.py's RemoteInput (Task 3). Kept as plain
+# module-level functions, same as parse_input_extension() above, so the
+# pieces that don't need a socket or a live D-Bus session — buffer
+# accumulation/capping, message routing, counter bookkeeping — are testable
+# on their own.
+
+INPUT_READ_CHUNK_BYTES = 4096
+# How often the reader thread's select() call returns on its own so it can
+# re-check should_stop() even when the client sends nothing. Deliberately
+# NOT implemented via conn.settimeout(): that would change the timeout on
+# the very socket object the send loop's blocking sendall() calls also use,
+# which is exactly the cross-thread interference requirement 8 ("never
+# disturb the send loop") rules out. select() lets this loop wait without
+# touching that shared state at all.
+INPUT_READ_POLL_S = 1.0
+# The wire format caps one pending frame at header(2) + max payload(255) =
+# 257 bytes — see input_protocol.py's module docstring (type:u8 length:u8
+# payload[length]). A well-behaved peer's carried-forward remainder should
+# never sit above that. This reader enforces its own ceiling regardless: a
+# peer that sends a header claiming a payload and never finishes it (or any
+# other malformed stream) must not be allowed to grow this buffer without
+# bound while more bytes keep arriving — so once the remainder exceeds
+# this, it is discarded outright and framing resyncs from the next byte
+# read, rather than trusting the peer's declared length forever.
+INPUT_BUFFER_CAP_BYTES = 257
+# Caps sustained input dispatches (motion + button-press + axis combined)
+# to this many per second, after an initial burst — see
+# INPUT_DISPATCH_BURST below for why a burst allowance, not a strict
+# minimum interval, is what's actually needed. RemoteInput.move() already
+# coalesces motion on its own (see its docstring), but button() and axis()
+# are never coalesced there — each is its own synchronous D-Bus round
+# trip — so a flood of either, or just raw message volume in general,
+# must be bounded here or it can saturate D-Bus or make the desktop
+# unusable.
+INPUT_DISPATCH_RATE_HZ = 200
+# A single realistic gesture routinely produces more than one dispatch at
+# once: a tap sends motion (the touch-down position) immediately followed
+# by a button press, and a drag start adds axis on top of that — normally
+# arriving in the same read, microseconds apart. A limiter with zero
+# burst tolerance (a strict "no two dispatches closer than 1/rate")
+# would throttle every one of these completely ordinary bursts, most
+# visibly as taps whose press silently never reaches the desktop. This
+# is the token-bucket burst size that absorbs any single gesture's
+# coupled events before the sustained INPUT_DISPATCH_RATE_HZ limit takes
+# over — see _RateLimiter below.
+INPUT_DISPATCH_BURST = 20
+
+
+class _RateLimiter:
+    """Token bucket: up to `burst` dispatches allowed instantly, then
+    refilling at `rate_hz` tokens/second. Each run_input_reader() call
+    constructs its own — the budget is per connection, never shared."""
+
+    def __init__(self, rate_hz: float = INPUT_DISPATCH_RATE_HZ,
+                 burst: int = INPUT_DISPATCH_BURST):
+        self._rate = rate_hz
+        self._capacity = float(burst)
+        self._tokens = float(burst)
+        self._last = time.monotonic()
+
+    def allow(self) -> bool:
+        now = time.monotonic()
+        elapsed = max(0.0, now - self._last)
+        self._last = now
+        self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return True
+        return False
+
+
+def dispatch_input_message(msg: InputMessage, remote_input: RemoteInput,
+                            metrics: StreamMetrics,
+                            allow_rate_limited: Callable[[], bool] = lambda: True) -> None:
+    """Decode one already-framed input message and forward it to
+    `remote_input`, or count it dropped.
+
+    Factored out of the reader loop so routing is testable with a fake
+    RemoteInput and no socket. Callers are responsible for counting the
+    message under input_events_received before calling this.
+
+    `allow_rate_limited` gates motion, axis, and button-*press* events —
+    call sites pass the flood limiter here, and a False consults counts
+    as dropped. A button *release* never consults it at all and is
+    always forwarded on to RemoteInput.button(): dropping a press just
+    means nothing happens on the OS side, but dropping a release for a
+    button RemoteInput already believes is held would leave it stuck
+    down until the connection ends — the single worst failure mode this
+    feature has (see remote_input.py's module docstring) — so releases
+    are deliberately exempt from the flood limiter. The default no-op
+    limiter (always allow) is what makes this function usable standalone
+    in tests that aren't exercising rate limiting at all.
+
+    That exemption alone would let a flood of releases reach D-Bus
+    completely unthrottled, though — RemoteInput.button() is what
+    actually bounds it: a release for a code it does not believe is held
+    is a no-op there, and its return value tells us so, which is what
+    gets counted as dropped below. Every *meaningful* release (for a
+    button genuinely held) still gets through unthrottled, exactly as
+    intended; only a no-op release is discarded, and at most a handful of
+    buttons can be held at once, so a flood of the rest is naturally
+    bounded without ever risking a stuck button.
+
+    Never raises: RemoteInput's own methods are exception-safe by
+    contract, and every decode_* helper here returns None rather than
+    raising on malformed input.
+    """
+    if msg.type == MSG_POINTER_MOTION:
+        decoded = decode_motion(msg.payload)
+        if decoded is None or not allow_rate_limited():
+            metrics.incr("input_events_dropped")
+            return
+        remote_input.move(*decoded)
+    elif msg.type == MSG_POINTER_BUTTON:
+        decoded = decode_button(msg.payload)
+        if decoded is None:
+            metrics.incr("input_events_dropped")
+            return
+        code, pressed = decoded
+        if pressed and not allow_rate_limited():
+            metrics.incr("input_events_dropped")
+            return
+        # button() itself decides whether a release is meaningful — see
+        # this function's docstring above. A False return means it was
+        # discarded as a no-op (a release for a code not currently held),
+        # which is counted as dropped the same as every other drop on
+        # this path; a True return covers both a press and a genuine
+        # release, neither of which is a drop.
+        if not remote_input.button(code, pressed):
+            metrics.incr("input_events_dropped")
+    elif msg.type == MSG_POINTER_AXIS:
+        decoded = decode_axis(msg.payload)
+        if decoded is None or not allow_rate_limited():
+            metrics.incr("input_events_dropped")
+            return
+        remote_input.axis(*decoded)
+    else:
+        metrics.incr("input_events_dropped")
+
+
+def accumulate_input_buffer(buffer: bytes, chunk: bytes) -> Tuple[List[InputMessage], bytes, bool]:
+    """Append a freshly-read `chunk` to `buffer`, parse out complete
+    messages, and enforce INPUT_BUFFER_CAP_BYTES on what's carried forward.
+
+    Returns (messages, new_buffer, overflowed). `overflowed` is True when
+    the remainder parse_messages() left behind exceeded the cap, in which
+    case `new_buffer` is already b"" — the pending bytes were discarded so
+    framing resyncs from the next read, rather than growing forever on a
+    peer that sends a header claiming a payload and never finishes it (or
+    any other malformed stream). Split out of the reader loop so it is
+    unit-testable without a socket.
+    """
+    messages, remainder = parse_messages(buffer + chunk)
+    if len(remainder) > INPUT_BUFFER_CAP_BYTES:
+        return messages, b"", True
+    return messages, remainder, False
+
+
+def run_input_reader(conn: socket.socket, remote_input: RemoteInput,
+                      metrics: StreamMetrics,
+                      should_stop: Callable[[], bool]) -> None:
+    """Read client input messages off `conn` until it closes or
+    `should_stop()` says to, dispatching each to `remote_input`.
+
+    Runs on its own daemon thread, one per connection, started only when
+    input was negotiated and a RemoteInput session exists (see
+    _handle_client). select() — not conn.settimeout() — is what lets this
+    loop wake periodically to re-check should_stop(): the same socket
+    object is shared with the send loop's blocking sendall() calls, and
+    settimeout() would change the timeout for those too. This function
+    never sets or reads conn's timeout at all, so it cannot disturb them.
+
+    Every parsed message is counted under input_events_received; an
+    unknown type, an undecodable payload, or a motion/axis/button-press
+    beyond what the per-connection _RateLimiter currently allows is
+    additionally counted under input_events_dropped and skipped — never
+    raised, and never a reason to close the connection. Button releases
+    are exempt from that limiter regardless of volume — see
+    dispatch_input_message()'s docstring for why.
+
+    A failure anywhere in this function is caught and logged, never
+    raised — its only contract with the rest of the server is to never
+    disturb the send loop, and an uncaught exception on a daemon thread
+    would otherwise vanish silently while conceivably leaving a button
+    held. release_all() in the finally block is what actually guarantees a
+    button is never left stuck down, regardless of how this loop exits:
+    clean disconnect, error, or shutdown.
+    """
+    buffer = b""
+    limiter = _RateLimiter()  # one independent budget per connection
+    try:
+        while not should_stop():
+            try:
+                ready, _, _ = select.select([conn], [], [], INPUT_READ_POLL_S)
+            except (OSError, ValueError):
+                break  # socket already closed out from under us
+            if not ready:
+                continue
+            try:
+                chunk = conn.recv(INPUT_READ_CHUNK_BYTES)
+            except (OSError, socket.timeout):
+                break
+            if not chunk:
+                break  # peer closed its write side
+            messages, buffer, overflowed = accumulate_input_buffer(buffer, chunk)
+            if overflowed:
+                log.warning(
+                    "Input buffer exceeded %d bytes — discarding and "
+                    "resyncing framing", INPUT_BUFFER_CAP_BYTES,
+                )
+            for msg in messages:
+                metrics.incr("input_events_received")
+                dispatch_input_message(msg, remote_input, metrics, limiter.allow)
+    except Exception as e:
+        log.debug("Input reader stopping on unexpected error: %s", e)
+    finally:
+        try:
+            remote_input.release_all()
+        except Exception:
+            pass
 
 
 # ── Config & State ────────────────────────────────────────────────────────────
@@ -145,6 +476,17 @@ class ServerConfig:
     device_height: int = 0
     orientation: str = "landscape"      # "landscape" | "portrait"
     auto_start: bool = False
+    # Off is deliberate, not an oversight. Every other field on this
+    # dataclass configures how the stream looks; this one decides whether a
+    # connected client can drive the pointer/keyboard on this machine at
+    # all. That's real capability transfer, not a preference, so it ships
+    # opted OUT and the user has to explicitly opt in — via the UI toggle
+    # in ui/window.py or TETHRLINK_TOUCH in app/main.py — rather than
+    # shipping it on and trusting every client to behave. See
+    # ServerCore._handle_client: when this is False, no RemoteInput /
+    # RemoteDesktop session is even created for the connection, regardless
+    # of what the client advertises wanting.
+    touch_enabled: bool = False
 
 
 @dataclass
@@ -155,6 +497,21 @@ class ServerState:
     fps: int = 0
     resolution: str = ""
     codec_name: str = ""
+    # What is actually true for the current session, mirroring codec_name:
+    # not "did the client ask for input" and not "is touch_enabled set" —
+    # whether a RemoteInput session was actually negotiated and paired.
+    # False whenever nothing is connected.
+    input_active: bool = False
+    # Per-second counts of frames dropped / queue overflows — sampled in
+    # the same 1-second window as `fps` (see the per-second metrics block
+    # in _handle_client), not the cumulative session total. That choice is
+    # deliberate: StreamMetrics' counters only ever grow, so surfacing the
+    # raw cumulative value would pin a UI's health verdict at "recovering"
+    # forever after a single brief hiccup, long after the stream actually
+    # recovered — which is worse than not showing a verdict at all. 0
+    # whenever nothing is connected.
+    dropped: int = 0
+    overflows: int = 0
     port: int = 0
     active_width: int = 0    # resolved dims from last/current connection
     active_height: int = 0
@@ -285,27 +642,77 @@ def detect_session_type() -> str:
 
 # ── Mutter virtual display ────────────────────────────────────────────────────
 
-def cleanup_orphaned_sessions(bus):
+def _sweep_session_tree(bus, service_name: str, base_path: str,
+                         session_iface: str,
+                         dispose: Optional[Callable] = None) -> None:
+    """Enumerate live session objects under `base_path` on `service_name`
+    and tear each one down.
+
+    Exception-safe at two levels, deliberately: the whole sweep is
+    wrapped (a bus with nothing listening at `base_path`, or a session
+    tree that fails to introspect, must not raise — cleanup that raises
+    would be worse than the leak it exists to fix), and each discovered
+    node is torn down independently, in its own try/except, so one
+    session that refuses to die can't stop the rest of the sweep from
+    running.
+
+    `dispose`, when given, replaces the bare `Stop()` call used for
+    ScreenCast sessions below. RemoteDesktop sessions need
+    dispose_remote_desktop_session()'s more thorough Start()-then-Stop()
+    fallback (see its docstring in remote_input.py): a session that was
+    created but never started rejects a bare Stop() and, left at that,
+    never actually leaves the bus.
+    """
     try:
-        sc_obj = bus.get_object(MUTTER_BUS, MUTTER_PATH)
-        intro  = dbus.Interface(sc_obj, "org.freedesktop.DBus.Introspectable")
+        obj   = bus.get_object(service_name, base_path)
+        intro = dbus.Interface(obj, "org.freedesktop.DBus.Introspectable")
         import defusedxml.ElementTree as ET
         root = ET.fromstring(intro.Introspect())
         for node in root.findall("node"):
             name = node.get("name", "")
-            if name:
-                try:
-                    obj = bus.get_object(MUTTER_BUS, f"{MUTTER_PATH}/{name}")
-                    dbus.Interface(obj, MUTTER_SES_IF).Stop()
+            if not name:
+                continue
+            try:
+                session_obj = bus.get_object(service_name, f"{base_path}/{name}")
+                session = dbus.Interface(session_obj, session_iface)
+                if dispose is not None:
+                    ok = dispose(session)
+                else:
+                    session.Stop()
+                    ok = True
+                if ok:
                     log.info("Cleaned orphaned session: %s", name)
-                except Exception:
-                    pass
+                else:
+                    log.debug("Orphaned session %s did not dispose", name)
+            except Exception as e:
+                log.debug("Could not clean orphaned session %s: %s", name, e)
     except Exception as e:
-        log.debug("Session cleanup: %s", e)
+        log.debug("Session cleanup at %s: %s", base_path, e)
+
+
+def cleanup_orphaned_sessions(bus):
+    """Sweep leftover ScreenCast AND RemoteDesktop sessions from a
+    previous run.
+
+    Two independent object trees, so two independent sweeps.
+    RemoteDesktop sessions (Task 5's input pairing, created by
+    RemoteInput.create()) live entirely under RD_PATH and are never
+    returned by introspecting MUTTER_PATH — without this second sweep, a
+    RemoteDesktop session orphaned by a run that never got the chance to
+    tear it down itself (a crash, a kill -9, or simply a connection that
+    hit MutterVirtualDisplay.setup()'s paired-failure path before that
+    path's own immediate teardown was added) would persist on the bus
+    forever instead of being cleaned up the next time a client connects.
+    """
+    _sweep_session_tree(bus, MUTTER_BUS, MUTTER_PATH, MUTTER_SES_IF)
+    _sweep_session_tree(bus, RD_BUS, RD_PATH, RD_SES_IF,
+                         dispose=dispose_remote_desktop_session)
 
 
 class MutterVirtualDisplay:
-    def __init__(self, width: int, height: int, bus=None):
+    def __init__(self, width: int, height: int, bus=None,
+                 remote_input: Optional[RemoteInput] = None,
+                 remote_input_session_id: Optional[str] = None):
         self.width       = width
         self.height      = height
         self._node_id    = None
@@ -315,6 +722,18 @@ class MutterVirtualDisplay:
         self._bus  = bus or dbus.SessionBus()
         self._context = GLib.MainContext()
         self._loop    = GLib.MainLoop(self._context)
+        # Task 5's input pairing: when both are given, this ScreenCast
+        # session is created with remote-desktop-session-id set to
+        # remote_input_session_id, binding it to remote_input's
+        # already-created RemoteDesktop session. Verified on a live Mutter
+        # 46 session: once paired, only the RemoteDesktop session's own
+        # Start()/Stop() may be called — calling this ScreenCast session's
+        # Start()/Stop() directly raises "Must be started/stopped from
+        # remote desktop session". See setup()/close() below.
+        self._remote_input = remote_input
+        self._remote_input_session_id = remote_input_session_id
+        self._paired = False   # set in setup() once pairing props are used
+        self._stream_path: Optional[str] = None
         cleanup_orphaned_sessions(self._bus)
         sc_obj    = self._bus.get_object(MUTTER_BUS, MUTTER_PATH)
         self._sc  = dbus.Interface(sc_obj, MUTTER_SC_IF)
@@ -323,53 +742,125 @@ class MutterVirtualDisplay:
     def setup(self) -> int:
         log.info("Creating Mutter ScreenCast session...")
 
-        # Try to suppress GNOME screen-recording indicator (Mutter ≥ 44 honours this)
-        for props in [{"disable-notifications": dbus.Boolean(True)}, {}]:
+        pairing_props = {}
+        if self._remote_input is not None and self._remote_input_session_id is not None:
+            pairing_props = {
+                "remote-desktop-session-id": dbus.String(self._remote_input_session_id)
+            }
+
+        # Try to suppress GNOME screen-recording indicator (Mutter ≥ 44
+        # honours this), retrying without it if that combination is
+        # rejected. Pairing props, when present, are included in every
+        # attempt — unlike disable-notifications they are not optional once
+        # input was negotiated and paired for this connection. Which
+        # attempt is "last" is now tracked by index rather than by the
+        # props dict being falsy, since a non-empty pairing_props dict
+        # would otherwise be (wrongly) truthy on the final attempt too.
+        attempts = [
+            {**pairing_props, "disable-notifications": dbus.Boolean(True)},
+            dict(pairing_props),
+        ]
+        for i, props in enumerate(attempts):
             try:
                 self._session_path = str(self._sc.CreateSession(
                     dbus.Dictionary(props, signature="sv")
                 ))
                 break
             except Exception as e:
-                if not props:
+                if i == len(attempts) - 1:
                     raise
                 log.debug("CreateSession with disable-notifications failed (%s), retrying plain", e)
+        self._paired = bool(pairing_props)
 
-        session_obj = self._bus.get_object(MUTTER_BUS, self._session_path)
-        session     = dbus.Interface(session_obj, MUTTER_SES_IF)
+        # Everything from here through the loop run is wrapped: once
+        # CreateSession above has succeeded, a paired session means
+        # RemoteInput.create() already created a RemoteDesktop session on
+        # the bus too (before this object even existed — see
+        # ServerCore._handle_client). If RecordVirtual raises, the setup
+        # timeout fires, or the ScreenCast session gets closed out from
+        # under us before the PipeWire stream ever shows up, Start() on
+        # that RemoteDesktop session is never reached — and it must not
+        # be left dangling on the bus for cleanup_orphaned_sessions() to
+        # maybe find on some later run when it can be disposed right now
+        # instead. See the except block below.
+        try:
+            session_obj = self._bus.get_object(MUTTER_BUS, self._session_path)
+            session     = dbus.Interface(session_obj, MUTTER_SES_IF)
 
-        def _on_closed():
-            if self._in_setup:
-                setattr(self, "_error", "Session closed during setup")
-                self._loop.quit()
-            elif self.on_closed:
+            def _on_closed():
+                if self._in_setup:
+                    setattr(self, "_error", "Session closed during setup")
+                    self._loop.quit()
+                elif self.on_closed:
+                    try:
+                        self.on_closed()
+                    except Exception:
+                        log.exception("on_closed callback raised")
+
+            session_obj.connect_to_signal("Closed", _on_closed, dbus_interface=MUTTER_SES_IF)
+
+            stream_path = str(session.RecordVirtual(
+                dbus.Dictionary({"cursor-mode": dbus.UInt32(1)}, signature="sv")
+            ))
+            self._stream_path = stream_path
+            stream_obj = self._bus.get_object(MUTTER_BUS, stream_path)
+            stream_obj.connect_to_signal("PipeWireStreamAdded",
+                lambda node_id: (setattr(self, "_node_id", int(node_id)),
+                                 log.info("PipeWire node: %d", int(node_id)),
+                                 self._loop.quit()),
+                dbus_interface=MUTTER_STR_IF)
+
+            if self._paired:
+                # Paired: only the RemoteDesktop session's own Start() may be
+                # called (see __init__'s docstring note) — it drives this
+                # ScreenCast session too. bind_stream() first so the pointer
+                # methods have a valid stream the instant the session comes up.
+                self._remote_input.bind_stream(stream_path)
+                self._remote_input.start()
+            else:
+                session.Start()
+
+            GLib.timeout_add(MUTTER_SETUP_TIMEOUT_MS, lambda: (
+                setattr(self, "_error", "Timeout"), self._loop.quit()
+            ))
+            self._loop.run()
+            self._in_setup = False
+            if self._error:
+                raise RuntimeError(self._error)
+        except Exception:
+            self._in_setup = False
+            if self._paired and self._remote_input is not None:
+                # Tear down the paired RemoteDesktop session immediately,
+                # rather than counting on the caller to do it (it does —
+                # see ServerCore._handle_client — but this class should
+                # not depend on that). remote_input.stop() is exception-
+                # safe end-to-end on its own (it routes through
+                # dispose_remote_desktop_session(), which specifically
+                # handles a session that was created but never started —
+                # see remote_input.py), but it is wrapped again here
+                # anyway: a cleanup attempt raising out of an exception
+                # handler would replace this failure with a worse one.
                 try:
-                    self.on_closed()
+                    self._remote_input.stop()
                 except Exception:
-                    log.exception("on_closed callback raised")
-
-        session_obj.connect_to_signal("Closed", _on_closed, dbus_interface=MUTTER_SES_IF)
-
-        stream_path = str(session.RecordVirtual(
-            dbus.Dictionary({"cursor-mode": dbus.UInt32(1)}, signature="sv")
-        ))
-        stream_obj = self._bus.get_object(MUTTER_BUS, stream_path)
-        stream_obj.connect_to_signal("PipeWireStreamAdded",
-            lambda node_id: (setattr(self, "_node_id", int(node_id)),
-                             log.info("PipeWire node: %d", int(node_id)),
-                             self._loop.quit()),
-            dbus_interface=MUTTER_STR_IF)
-        session.Start()
-        GLib.timeout_add(MUTTER_SETUP_TIMEOUT_MS, lambda: (
-            setattr(self, "_error", "Timeout"), self._loop.quit()
-        ))
-        self._loop.run()
-        self._in_setup = False
-        if self._error:
-            raise RuntimeError(self._error)
+                    pass
+            raise
         return self._node_id
 
     def close(self):
+        if self._paired and self._remote_input is not None:
+            # This ScreenCast session's own Stop() raises "must be stopped
+            # from remote desktop session" once paired (same constraint as
+            # Start(), verified on a live Mutter 46 session) — only the
+            # RemoteDesktop session's Stop() actually tears down both.
+            # RemoteInput.stop() also flushes any pending motion and
+            # releases any held button, so this is the only call needed
+            # for a paired session's teardown.
+            try:
+                self._remote_input.stop()
+            except Exception:
+                pass
+            return
         if self._session_path:
             try:
                 obj = self._bus.get_object(MUTTER_BUS, self._session_path)
@@ -721,17 +1212,43 @@ def select_encoder(config: EncoderConfig, width: int, height: int):
                 "Cached encoder record was malformed (%r) — discarding "
                 "and re-probing", cached,
             )
-        elif spec.element and _encoder_runs(spec, width, height):
-            # Trust but verify: a cached encoder that no longer works — a GPU in
-            # use by another session, a driver that loaded differently — must not
-            # break the stream. Re-running it is far cheaper than the full probe.
-            log.info("Encoder from cache: %s (%s, rate-control=%s)",
-                     spec.element,
-                     "hardware" if spec.is_hardware else "software",
-                     spec.rate_control)
-            _ENCODER_CACHE[key] = spec
-            return spec
         else:
+            # Reuse only the expensive half of the cached decision — which
+            # element to use, and which rate-control mode this GPU/driver
+            # actually accepts (probing that means instantiating and
+            # running a pipeline, which is what caching exists to avoid).
+            # Every resolution-dependent property (bitrate, gop length) is
+            # rebuilt fresh from THIS call's config through build_spec() —
+            # the one place that knows how props are formed — rather than
+            # replaying the cached props verbatim. Replaying them used to
+            # run the pipeline at whatever bitrate/gop was live when the
+            # cache was written (e.g. a different resolution's derived
+            # bitrate) while the log reported the newly-derived number: the
+            # pipeline and the log disagreed, and the pipeline was wrong.
+            #
+            # available_rate_controls is just {spec.rate_control}: that
+            # mode was already verified available on a prior run, so
+            # build_spec's degrade-to-CQP path is correctly never
+            # triggered here — only entered when re-probing might land on
+            # a different mode than before, which is not the case here.
+            rebuilt_config = EncoderConfig(
+                bitrate_kbps=config.bitrate_kbps,
+                gop_length=config.gop_length,
+                rate_control=spec.rate_control,
+                low_latency=config.low_latency,
+            )
+            rebuilt = build_spec(spec.element, rebuilt_config, {spec.rate_control})
+            if rebuilt is not None and _encoder_runs(rebuilt, width, height):
+                # Trust but verify: a cached encoder that no longer works — a GPU
+                # in use by another session, a driver that loaded differently —
+                # must not break the stream. Re-running it is far cheaper than
+                # the full probe.
+                log.info("Encoder from cache: %s (%s, rate-control=%s)",
+                         rebuilt.element,
+                         "hardware" if rebuilt.is_hardware else "software",
+                         rebuilt.rate_control)
+                _ENCODER_CACHE[key] = rebuilt
+                return rebuilt
             log.info("Cached encoder %s no longer usable — re-probing",
                      spec.element)
 
@@ -778,11 +1295,17 @@ def select_encoder(config: EncoderConfig, width: int, height: int):
     # len(CANDIDATES) * 5s, not unbounded — do not raise that timeout.
     if chosen is not None:
         _ENCODER_CACHE[key] = chosen
+        # Deliberately no "props" here. Props are resolution/bitrate-
+        # dependent and are always rebuilt fresh from the live config via
+        # build_spec() (see the cache-hit branch above) — storing them was
+        # the bug: a future session at a different resolution would replay
+        # today's props verbatim. What's actually worth caching — because
+        # it costs a real probe to learn — is just the element and the
+        # rate-control mode this machine's driver actually accepts.
         store.set_encoder(fingerprint, {
             "element": chosen.element,
             "is_hardware": chosen.is_hardware,
             "rate_control": chosen.rate_control,
-            "props": chosen.props,
         })
         store.save()
     return chosen
@@ -1457,6 +1980,10 @@ class ServerCore:
         self._display: Optional[MutterVirtualDisplay] = None
         self._capture: Optional[PipeWireCapture]      = None
         self._conn:    Optional[socket.socket]        = None  # active client socket
+        self._input_negotiated: bool = False  # set per-connection in
+                                               # _handle_client; whether this
+                                               # client both advertised input
+                                               # support and had it accepted
         self._broadcaster: Optional[DiscoveryBroadcaster] = None
         self._srv: Optional[socket.socket]            = None
         self._bus                                     = None
@@ -1530,7 +2057,8 @@ class ServerCore:
         # shutdown event causes the stream loop to exit and finally runs.
         # Nothing to do here for display/capture.
         self._state.update(running=False, connected=False,
-                           client_name="", fps=0)
+                           client_name="", fps=0, input_active=False,
+                           dropped=0, overflows=0)
         self._log("Server stopped")
 
     def set_quality(self, quality: int) -> None:
@@ -1566,6 +2094,15 @@ class ServerCore:
         while not self._shutdown.is_set():
             try:
                 conn, addr = self._srv.accept()
+                if not is_tether_peer(addr[0]):
+                    log.warning(
+                        "Rejected connection from %s — not on the expected "
+                        "tethering subnet (%s). If this device tethers over "
+                        "a different subnet, set TETHRLINK_TETHER_SUBNET to "
+                        "override.", addr[0], TETHER_SUBNET,
+                    )
+                    conn.close()
+                    continue
                 threading.Thread(
                     target=self._handle_client,
                     args=(conn, addr),
@@ -1603,6 +2140,41 @@ class ServerCore:
 
         self._conn = conn  # store so _on_session_closed can abort the stream
 
+        # ── Optional input-capability extension ─────────────────────────────
+        # See the EXT_MARKER block comment near the top of this file for the
+        # wire layout. Absence is the common case today (every released
+        # client is legacy) and must be entirely non-fatal: a timeout here
+        # just means "no extension", never a dropped connection.
+        client_wants_input = False
+        conn.settimeout(EXTENSION_READ_TIMEOUT_S)
+        try:
+            ext_header = conn.recv(EXT_HEADER_LEN)
+        except (socket.timeout, OSError):
+            ext_header = b""
+
+        # Extract capability byte (if present) to determine if client wants input.
+        cap_payload = b""
+        if len(ext_header) == EXT_HEADER_LEN and ext_header[:len(EXT_MARKER)] == EXT_MARKER:
+            cap_len = ext_header[len(EXT_MARKER)]
+            if cap_len > 0:
+                # Read exactly the length the client declared — never more,
+                # never fewer — so nothing is left on the wire for the input
+                # reader (Task 5) to misinterpret as the first message.
+                try:
+                    cap_payload = conn.recv(cap_len)
+                except (socket.timeout, OSError):
+                    cap_payload = b""
+
+        # Use the pure function to parse the extension safely.
+        client_wants_input = parse_input_extension(ext_header, cap_payload)
+        conn.settimeout(HANDSHAKE_TIMEOUT_S)  # restore for the rest of the handshake
+
+        # `touch_enabled` does not exist on ServerConfig yet (a later task
+        # adds the field and its UI toggle) — default to False, which is the
+        # deliberate ship default, so this negotiation works standalone.
+        touch_enabled = getattr(self._config, "touch_enabled", False)
+        self._input_negotiated = client_wants_input and touch_enabled
+
         # Explicit per-session stop signal. Capture teardown (pipeline error,
         # display reconfiguration) used to be signalled only indirectly, by
         # shutting the socket down and relying on the send loop's next
@@ -1613,6 +2185,11 @@ class ServerCore:
         # _client_lock would be held until server shutdown, answering every
         # reconnect with MAGIC_BUSY. The send loop now checks this event.
         session_stop = threading.Event()
+        # Separate from session_stop: this one only ever tells the input
+        # reader thread (Task 5, started below once the handshake reply is
+        # sent) to stop, so the send loop's own stop condition is never
+        # coupled to input's lifecycle by accident.
+        input_stop = threading.Event()
 
         # ── Save device dims: on the H.264 path these now drive the capture
         # resolution itself (see resolve_capture_size below), not just the UI
@@ -1712,18 +2289,68 @@ class ServerCore:
         # ── Set up capture (Wayland: Mutter virtual display, X11: mss) ─────────
         display = None
         capture = None
+        remote_input = None            # set below when input is negotiated
+                                        # and pairing succeeds (Task 5)
+        input_reader_thread = None
         self._log(f"Session type: {session_type.upper()}")
         try:
             if session_type == "wayland":
-                display = MutterVirtualDisplay(width, height, self._bus)
+                remote_input_session_id = None
+                if self._input_negotiated:
+                    candidate = RemoteInput(
+                        width, height, self._bus,
+                        frame_interval_s=1.0 / self._live_fps,
+                    )
+                    candidate_session_id = candidate.create()
+                    if candidate_session_id is not None:
+                        remote_input = candidate
+                        remote_input_session_id = candidate_session_id
+                    # else: create() already logged why — continue
+                    # video-only, same as every other "no input this
+                    # session" outcome remote_input.py documents as a
+                    # normal, supported result, not an error.
+
+                display = MutterVirtualDisplay(
+                    width, height, self._bus,
+                    remote_input=remote_input,
+                    remote_input_session_id=remote_input_session_id,
+                )
                 try:
                     node_id = display.setup()
                 except Exception as e:
-                    self._log(f"Virtual display failed: {e}")
-                    display.close()
-                    self._client_lock.release()
-                    conn.close()
-                    return
+                    if remote_input is not None:
+                        # Mutter's own coupling means a paired session's
+                        # Start() failure takes the ScreenCast side down
+                        # with it (verified live — see MutterVirtualDisplay's
+                        # docstring note). Video is the product; input is
+                        # an addition — retry once, unpaired, before
+                        # failing the whole connection over what may be an
+                        # input-only problem.
+                        log.warning(
+                            "Virtual display setup failed with input "
+                            "paired (%s) — retrying video-only", e,
+                        )
+                        try:
+                            remote_input.stop()
+                        except Exception:
+                            pass
+                        remote_input = None
+                        display.close()
+                        display = MutterVirtualDisplay(width, height, self._bus)
+                        try:
+                            node_id = display.setup()
+                        except Exception as e2:
+                            self._log(f"Virtual display failed: {e2}")
+                            display.close()
+                            self._client_lock.release()
+                            conn.close()
+                            return
+                    else:
+                        self._log(f"Virtual display failed: {e}")
+                        display.close()
+                        self._client_lock.release()
+                        conn.close()
+                        return
 
                 self._log("Virtual display ready — arrange windows using System Settings > Displays")
 
@@ -1849,8 +2476,30 @@ class ServerCore:
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
             w, h = resolve_stream_dimensions(capture)
 
-            conn.sendall(MAGIC_OK + struct.pack(">IIB", w, h, codec))
-            self._log(f"Streaming → {device_name}")
+            # Only the magic differs — the (w, h, codec) struct that follows
+            # is byte-identical either way, since the Android client reads
+            # it at a fixed offset regardless of which magic preceded it.
+            reply_magic = MAGIC_OK2 if self._input_negotiated else MAGIC_OK
+            conn.sendall(reply_magic + struct.pack(">IIB", w, h, codec))
+            self._log(f"Streaming → {device_name}"
+                      + (" (input enabled)" if self._input_negotiated else ""))
+
+            # ── Start the input reader (Task 5) ─────────────────────────────
+            # Only when input was negotiated AND a RemoteInput session
+            # actually exists — pairing may have failed and fallen back to
+            # video-only above, in which case remote_input is None here and
+            # no reader starts. See run_input_reader()'s docstring for why
+            # this never touches conn's timeout, which the send loop below
+            # also relies on.
+            if self._input_negotiated and remote_input is not None:
+                input_reader_thread = threading.Thread(
+                    target=run_input_reader,
+                    args=(conn, remote_input, capture.metrics, input_stop.is_set),
+                    daemon=True,
+                    name="tethrlink-input-reader",
+                )
+                input_reader_thread.start()
+                log.info("Input reader started for %s", device_name)
             if capture.is_inter_frame:
                 # The H.264 framerate lives in the pipeline caps, fixed when
                 # the pipeline was built, and the send loop is now driven by
@@ -1863,10 +2512,32 @@ class ServerCore:
             self._state.update(connected=True, client_name=device_name,
                                active_width=width, active_height=height,
                                device_width=self._config.device_width,
-                               device_height=self._config.device_height)
+                               device_height=self._config.device_height,
+                               # Whether input actually paired for this
+                               # session — not the request, not the
+                               # config flag. Negotiation can succeed
+                               # (touch_enabled True, client asked for it)
+                               # and pairing can still fail (see the
+                               # video-only retry above), in which case
+                               # remote_input is None here and this
+                               # correctly reports False.
+                               input_active=(self._input_negotiated
+                                             and remote_input is not None),
+                               # A fresh connection must not show whatever
+                               # dropped/overflow reading the previous
+                               # session left behind for the ~1s gap before
+                               # this session's own first metrics tick.
+                               dropped=0, overflows=0)
 
             frame_count  = 0
             fps_deadline = time.monotonic() + 1.0
+            # Cumulative StreamMetrics totals as of the last metrics tick,
+            # so the per-second dropped/overflows delta below can be
+            # computed the same way frame_count already is windowed to one
+            # second — see ServerState.dropped's docstring for why a delta
+            # (not the running cumulative total) is what the UI needs.
+            prev_dropped   = 0
+            prev_overflows = 0
 
             # Idle keepalive bookkeeping. `last_sent_monotonic` starts at "now"
             # (stream start), not at zero, so a session that goes idle
@@ -2014,7 +2685,15 @@ class ServerCore:
 
                 if time.monotonic() >= fps_deadline:
                     snap = capture.metrics.snapshot()
-                    self._state.update(fps=frame_count)
+                    # UI-facing dropped/overflows are this second's delta
+                    # against the cumulative StreamMetrics counters, not
+                    # the counters themselves — see ServerState.dropped.
+                    dropped_delta   = snap["frames_dropped"] - prev_dropped
+                    overflows_delta = snap["queue_overflows"] - prev_overflows
+                    prev_dropped    = snap["frames_dropped"]
+                    prev_overflows  = snap["queue_overflows"]
+                    self._state.update(fps=frame_count, dropped=dropped_delta,
+                                       overflows=overflows_delta)
                     log.info(
                         "fps=%d encoded=%d sent=%d dropped=%d dup_suppressed=%d "
                         "overflows=%d keyframe_reqs=%d",
@@ -2037,7 +2716,17 @@ class ServerCore:
             self._log(f"Stream error ({device_name}): {e}")
         finally:
             self._conn = None
-            self._state.update(connected=False, client_name="", fps=0)
+            self._state.update(connected=False, client_name="", fps=0,
+                               input_active=False, dropped=0, overflows=0)
+            # Signal the input reader (if one was started) to stop and give
+            # it a bounded window to actually exit — its own finally clause
+            # calls RemoteInput.release_all(), and running that before
+            # display.close() tears the paired session down is what
+            # guarantees a button is never left held on any exit path from
+            # this method.
+            input_stop.set()
+            if input_reader_thread is not None:
+                input_reader_thread.join(timeout=2.0)
             if capture and self._capture is not None:
                 # _on_session_closed may have already closed this — guard against double-close
                 try:

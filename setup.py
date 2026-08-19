@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="TethrLink",
-    version="1.1.0",
+    version="2.0.0",
     description="Wired Second Monitor via USB Tethering",
     long_description="TethrLink turns an Android tablet into a wired second monitor for your Linux PC using USB tethering.",
     long_description_content_type="text/plain",
