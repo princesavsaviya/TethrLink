@@ -1,18 +1,18 @@
 /* TethrLink GTK4 Dark Theme */
 
 window {
-    background-color: #0d1117;
-    color: #e6edf3;
+    background-color: #0F0F1A;
+    color: #FFFFFF;
 }
 
 /* ── Scrolled container ─────────────────────────────────────────────────────── */
 
 .main-scroll {
-    background-color: #0d1117;
+    background-color: #0F0F1A;
 }
 
 .main-scroll > viewport {
-    background-color: #0d1117;
+    background-color: #0F0F1A;
 }
 
 /* ── Welcome / Stopped state ────────────────────────────────────────────────── */
@@ -24,13 +24,13 @@ window {
 .app-logo {
     font-size: 48px;
     font-weight: 800;
-    color: #7c3aed;
+    color: #7C6AF7;
     letter-spacing: -1px;
 }
 
 .app-logo-sub {
     font-size: 13px;
-    color: #6e7681;
+    color: #4DFFFFFF;
     letter-spacing: 3px;
     text-transform: uppercase;
     margin-top: 4px;
@@ -39,13 +39,13 @@ window {
 .welcome-title {
     font-size: 28px;
     font-weight: 700;
-    color: #e6edf3;
+    color: #FFFFFF;
     margin-top: 32px;
 }
 
 .welcome-subtitle {
     font-size: 15px;
-    color: #8b949e;
+    color: #99FFFFFF;
     margin-top: 12px;
     line-height: 1.6;
 }
@@ -53,7 +53,7 @@ window {
 /* ── Buttons ────────────────────────────────────────────────────────────────── */
 
 .btn-start {
-    background-color: #7c3aed;
+    background-color: #7C6AF7;
     color: #ffffff;
     font-size: 15px;
     font-weight: 600;
@@ -65,32 +65,32 @@ window {
 }
 
 .btn-start:hover {
-    background-color: #6d28d9;
+    background-color: #6455D4;
 }
 
 .btn-start:active {
-    background-color: #5b21b6;
+    background-color: #6455D4;
 }
 
 .btn-stop {
-    background-color: #1a1f2e;
-    color: #f87171;
+    background-color: #141426;
+    color: #EF4444;
     font-size: 14px;
     font-weight: 600;
     border-radius: 10px;
     padding: 11px 36px;
-    border: 1px solid #3d2626;
+    border: 1px solid #7F1D1D;
     margin-top: 12px;
     transition: background-color 150ms ease, border-color 150ms ease;
 }
 
 .btn-stop:hover {
-    background-color: #2d1515;
-    border-color: #f87171;
+    background-color: #7F1D1D;
+    border-color: #EF4444;
 }
 
 .btn-apply {
-    background-color: #7c3aed;
+    background-color: #7C6AF7;
     color: #ffffff;
     font-size: 13px;
     font-weight: 600;
@@ -101,20 +101,20 @@ window {
 }
 
 .btn-apply:hover {
-    background-color: #6d28d9;
+    background-color: #6455D4;
 }
 
 .btn-apply:disabled {
-    background-color: #21262d;
-    color: #484f58;
-    border: 1px solid #30363d;
+    background-color: #1AFFFFFF;
+    color: #33FFFFFF;
+    border: 1px solid #33FFFFFF;
 }
 
 /* ── Section cards ──────────────────────────────────────────────────────────── */
 
 .section-card {
-    background-color: #161b22;
-    border: 1px solid #21262d;
+    background-color: #1A1A2E;
+    border: 1px solid #1AFFFFFF;
     border-radius: 12px;
     padding: 20px;
     margin: 0 20px 16px 20px;
@@ -124,7 +124,7 @@ window {
 
 .settings-title {
     font-size: 12px;
-    color: #6e7681;
+    color: #4DFFFFFF;
     font-weight: 700;
     letter-spacing: 1px;
     text-transform: uppercase;
@@ -132,42 +132,42 @@ window {
 
 .settings-divider {
     min-height: 1px;
-    background-color: #21262d;
+    background-color: #1AFFFFFF;
 }
 
 .setting-name {
     font-size: 14px;
-    color: #e6edf3;
+    color: #FFFFFF;
     font-weight: 500;
 }
 
 .setting-hint {
     font-size: 12px;
-    color: #6e7681;
+    color: #4DFFFFFF;
     margin-top: 2px;
 }
 
 .codec-dropdown {
-    background-color: #21262d;
-    color: #e6edf3;
+    background-color: #1AFFFFFF;
+    color: #FFFFFF;
     font-size: 13px;
     font-weight: 500;
     border-radius: 8px;
-    border: 1px solid #30363d;
+    border: 1px solid #33FFFFFF;
     padding: 4px 8px;
 }
 
 .codec-dropdown:disabled {
-    background-color: #161b22;
-    color: #484f58;
-    border-color: #21262d;
+    background-color: #1A1A2E;
+    color: #33FFFFFF;
+    border-color: #1AFFFFFF;
 }
 
 /* ── Status bar (running state header) ──────────────────────────────────────── */
 
 .status-bar {
-    background-color: #161b22;
-    border-bottom: 1px solid #21262d;
+    background-color: #1A1A2E;
+    border-bottom: 1px solid #1AFFFFFF;
     padding: 10px 20px;
 }
 
@@ -176,21 +176,21 @@ window {
 }
 
 .status-dot.connected {
-    color: #3fb950;
+    color: #4ADE80;
 }
 
 .status-dot.idle {
-    color: #f0883e;
+    color: #EAB308;
 }
 
 .status-text {
     font-size: 13px;
-    color: #8b949e;
+    color: #99FFFFFF;
     font-weight: 500;
 }
 
 .status-fps {
     font-size: 13px;
-    color: #3fb950;
+    color: #4ADE80;
     font-weight: 600;
 }

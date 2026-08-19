@@ -88,15 +88,19 @@ def save_settings(d):
 STYLE = os.path.join(REPO, "server", "ui", "style.css")
 LOGO = os.path.join(REPO, "server", "ui", "assets", "tethrlink.png")
 
-# Palette lifted from server/ui/style.css so the two cannot drift apart.
-BG = "#0d1117"
-CARD = "#161b22"
-BORDER = "#21262d"
-TEXT = "#e6edf3"
-DIM = "#8b949e"
-ACCENT = "#7c3aed"
-OK = "#3fb950"
-WARN = "#f87171"
+# Palette is the Android app's, mirrored in server/ui/style.css, so the two
+# halves of the product look like one product. Android is the source of
+# truth: it is the surface the user actually looks at, and its alpha-based
+# text and borders scale across surfaces better than fixed greys.
+BG = "#0F0F1A"        # bg_primary
+CARD = "#1A1A2E"      # bg_card
+BORDER = "#1AFFFFFF"  # border_default — alpha, so it works on any surface
+TEXT = "#FFFFFF"      # text_primary
+DIM = "#99FFFFFF"     # text_secondary
+ACCENT = "#7C6AF7"    # brand
+ACCENT_HOVER = "#6455D4"  # brand_pressed
+OK = "#4ADE80"        # success
+WARN = "#EAB308"      # warning
 
 # Adwaita widgets did not exist in the original stylesheet, so they need
 # colours of their own. Everything here is drawn from the palette above.
@@ -148,7 +152,7 @@ row > box > label.subtitle {{ color: {DIM}; font-size: 12px; }}
     padding: 10px 30px;
     font-weight: 600;
 }}
-.pill-primary:hover {{ background-color: #6d28d9; }}
+.pill-primary:hover {{ background-color: {ACCENT_HOVER}; }}
 .pill-quiet {{
     background-image: none;
     background-color: transparent;
