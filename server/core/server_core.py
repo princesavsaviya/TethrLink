@@ -1202,17 +1202,43 @@ def select_encoder(config: EncoderConfig, width: int, height: int):
                 "Cached encoder record was malformed (%r) — discarding "
                 "and re-probing", cached,
             )
-        elif spec.element and _encoder_runs(spec, width, height):
-            # Trust but verify: a cached encoder that no longer works — a GPU in
-            # use by another session, a driver that loaded differently — must not
-            # break the stream. Re-running it is far cheaper than the full probe.
-            log.info("Encoder from cache: %s (%s, rate-control=%s)",
-                     spec.element,
-                     "hardware" if spec.is_hardware else "software",
-                     spec.rate_control)
-            _ENCODER_CACHE[key] = spec
-            return spec
         else:
+            # Reuse only the expensive half of the cached decision — which
+            # element to use, and which rate-control mode this GPU/driver
+            # actually accepts (probing that means instantiating and
+            # running a pipeline, which is what caching exists to avoid).
+            # Every resolution-dependent property (bitrate, gop length) is
+            # rebuilt fresh from THIS call's config through build_spec() —
+            # the one place that knows how props are formed — rather than
+            # replaying the cached props verbatim. Replaying them used to
+            # run the pipeline at whatever bitrate/gop was live when the
+            # cache was written (e.g. a different resolution's derived
+            # bitrate) while the log reported the newly-derived number: the
+            # pipeline and the log disagreed, and the pipeline was wrong.
+            #
+            # available_rate_controls is just {spec.rate_control}: that
+            # mode was already verified available on a prior run, so
+            # build_spec's degrade-to-CQP path is correctly never
+            # triggered here — only entered when re-probing might land on
+            # a different mode than before, which is not the case here.
+            rebuilt_config = EncoderConfig(
+                bitrate_kbps=config.bitrate_kbps,
+                gop_length=config.gop_length,
+                rate_control=spec.rate_control,
+                low_latency=config.low_latency,
+            )
+            rebuilt = build_spec(spec.element, rebuilt_config, {spec.rate_control})
+            if rebuilt is not None and _encoder_runs(rebuilt, width, height):
+                # Trust but verify: a cached encoder that no longer works — a GPU
+                # in use by another session, a driver that loaded differently —
+                # must not break the stream. Re-running it is far cheaper than
+                # the full probe.
+                log.info("Encoder from cache: %s (%s, rate-control=%s)",
+                         rebuilt.element,
+                         "hardware" if rebuilt.is_hardware else "software",
+                         rebuilt.rate_control)
+                _ENCODER_CACHE[key] = rebuilt
+                return rebuilt
             log.info("Cached encoder %s no longer usable — re-probing",
                      spec.element)
 
@@ -1259,11 +1285,17 @@ def select_encoder(config: EncoderConfig, width: int, height: int):
     # len(CANDIDATES) * 5s, not unbounded — do not raise that timeout.
     if chosen is not None:
         _ENCODER_CACHE[key] = chosen
+        # Deliberately no "props" here. Props are resolution/bitrate-
+        # dependent and are always rebuilt fresh from the live config via
+        # build_spec() (see the cache-hit branch above) — storing them was
+        # the bug: a future session at a different resolution would replay
+        # today's props verbatim. What's actually worth caching — because
+        # it costs a real probe to learn — is just the element and the
+        # rate-control mode this machine's driver actually accepts.
         store.set_encoder(fingerprint, {
             "element": chosen.element,
             "is_hardware": chosen.is_hardware,
             "rate_control": chosen.rate_control,
-            "props": chosen.props,
         })
         store.save()
     return chosen

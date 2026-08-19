@@ -15,12 +15,14 @@ import pytest
 
 from server.core import link as link_module
 from server.core.link import (
+    interface_ipv4_address,
     interface_ipv4_network,
     is_tether_peer,
     resolve_tether_subnet,
     tether_broadcast_addresses,
     usb_interface_names,
     usb_tether_networks,
+    usb_tether_source_addresses,
 )
 
 
@@ -216,6 +218,72 @@ def test_no_usb_interfaces_means_no_broadcast_destinations(tmp_path):
     net_root = _make_fake_sysfs(tmp_path, {"wlo1": "pci"})
     lookup = _fake_lookup({"wlo1": ipaddress.ip_network("10.0.0.0/24")})
     assert tether_broadcast_addresses(net_root, lookup) == []
+
+
+# ── usb_tether_source_addresses() / interface_ipv4_address() ───────────────
+#
+# Discovery no longer sends a directed subnet broadcast (tested above) as
+# the actual wire destination — Android's UDP sockets receive that
+# unreliably, which is why the app stopped discovering an already-running
+# server. The fix instead binds the sending socket's *source* address to
+# the USB interface's own IP and sends the limited broadcast
+# (255.255.255.255); the bind is what keeps it off Wi-Fi. These addresses
+# are what a caller must bind() to.
+
+def _fake_addr_lookup(mapping):
+    """A stand-in for interface_ipv4_address(): iface name -> address
+    string (or None), from a plain dict instead of a real ioctl call.
+    """
+    def lookup(name):
+        return mapping.get(name)
+    return lookup
+
+
+def test_source_addresses_include_each_usb_interfaces_own_address(tmp_path):
+    net_root = _make_fake_sysfs(tmp_path, {
+        "enx1111": "usb",
+        "enx2222": "usb",
+        "wlo1": "pci",
+    })
+    lookup = _fake_addr_lookup({
+        "enx1111": "10.125.32.247",
+        "enx2222": "192.168.42.5",
+        "wlo1": "10.0.0.193",
+    })
+    sources = usb_tether_source_addresses(net_root, lookup)
+    assert set(sources) == {"10.125.32.247", "192.168.42.5"}
+    assert "10.0.0.193" not in sources  # Wi-Fi is never a bind source
+
+
+def test_no_usb_interfaces_means_no_source_addresses(tmp_path):
+    net_root = _make_fake_sysfs(tmp_path, {"wlo1": "pci"})
+    lookup = _fake_addr_lookup({"wlo1": "10.0.0.193"})
+    assert usb_tether_source_addresses(net_root, lookup) == []
+
+
+def test_usb_interface_with_no_ipv4_yet_contributes_no_source_address(tmp_path):
+    """Cable plugged in, tethering not yet flipped on — and separately, the
+    exact "stale interface" case this fix exists for: the interface name
+    the app used last session is gone or has a different address now.
+    Either way, a missing address must be skipped, never crash the caller.
+    """
+    net_root = _make_fake_sysfs(tmp_path, {"enx5e5d9d7b28fc": "usb"})
+    lookup = _fake_addr_lookup({"enx5e5d9d7b28fc": None})
+    assert usb_tether_source_addresses(net_root, lookup) == []
+
+
+def test_source_addresses_are_the_bindable_host_address_not_the_network():
+    """interface_ipv4_network() masks to the network address (host bits
+    zeroed) — deliberately unusable as a bind address. This sibling
+    function must report the real host address instead. Exercised against
+    the real loopback interface so the ioctl path itself (not just the
+    injected fake) is covered.
+    """
+    assert interface_ipv4_address("lo") == "127.0.0.1"
+
+
+def test_source_address_of_a_nonexistent_interface_is_none_not_a_raise():
+    assert interface_ipv4_address("no-such-interface-xyz") is None
 
 
 # ── TETHRLINK_TETHER_SUBNET override: validation (pure logic) ──────────────

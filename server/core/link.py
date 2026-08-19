@@ -241,6 +241,65 @@ def usb_tether_networks(
     return networks
 
 
+def interface_ipv4_address(ifname: str) -> Optional[str]:
+    """The interface's own primary IPv4 address, or None if it has none
+    (tethering not switched on) or the interface doesn't exist.
+
+    Sibling of interface_ipv4_network(), which deliberately discards the
+    host bits (masking down to the network address is all accept-time
+    filtering needs). This is the address itself — what a socket must
+    bind() to in order to have its outgoing packets sourced from, and
+    therefore routed out, this interface specifically. See
+    usb_tether_source_addresses(), which is what actually needs this.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            packed_name = struct.pack("256s", ifname.encode("utf-8")[:15])
+            addr_bytes = fcntl.ioctl(sock.fileno(), _SIOCGIFADDR, packed_name)
+    except OSError:
+        # No IPv4 address assigned (ENODEV/EADDRNOTAVAIL), or interface
+        # vanished between enumeration and lookup (cable pulled mid-check).
+        return None
+    return socket.inet_ntoa(addr_bytes[20:24])
+
+
+def usb_tether_source_addresses(
+    sysfs_root: Path = SYSFS_NET_ROOT,
+    address_lookup: Callable[[str], Optional[str]] = interface_ipv4_address,
+) -> List[str]:
+    """The bindable IPv4 source address of every USB-attached interface that
+    currently has one.
+
+    This is how discovery reaches Android reliably without leaking onto
+    Wi-Fi: bind a UDP socket to one of these addresses, then send the
+    *limited* broadcast (255.255.255.255) from it. The bind pins the
+    packet's outgoing route to that interface regardless of destination —
+    so it never reaches Wi-Fi — while the limited broadcast destination is
+    delivered far more reliably to Android's UDP sockets than a directed
+    subnet broadcast (e.g. 10.125.32.255) is. Directed broadcasts route
+    correctly but Android drops them more often in practice, which is what
+    made discovery silently stop working while the app was already open.
+
+    Re-walks sysfs and re-reads the address on every call — never cached —
+    because the tether interface is ephemeral: a different USB port, a
+    fresh tethering session, or Android re-negotiating DHCP each hand out a
+    new ifname and/or address (observed on the dev machine across three
+    distinct interface names in as many sessions). Callers must treat a
+    since-vanished address as routine — e.g. a bind() failing with
+    `[Errno 99] Cannot assign requested address` — not as fatal.
+
+    `sysfs_root` and `address_lookup` are parameters (with real-system
+    defaults) purely so tests can inject fake interface data instead of
+    depending on the developer's live network configuration.
+    """
+    addresses: List[str] = []
+    for name in usb_interface_names(sysfs_root):
+        addr = address_lookup(name)
+        if addr is not None:
+            addresses.append(addr)
+    return addresses
+
+
 def is_tether_peer(
     addr: Optional[str],
     *,
