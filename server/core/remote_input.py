@@ -45,6 +45,20 @@ PROPS_IF  = "org.freedesktop.DBus.Properties"
 # pass its own interval to __init__.
 DEFAULT_FRAME_INTERVAL_S = 1.0 / 30
 
+# Wayland/libinput axis numbering, which Mutter follows.
+AXIS_VERTICAL = 0
+AXIS_HORIZONTAL = 1
+
+# How many wheel notches a full-height drag produces. A browser scrolls roughly
+# 57px per notch (three text lines), so ~15 notches across a 1080-tall stream
+# keeps content tracking the finger near 1:1, which a touchscreen implies.
+# Named so it can be tuned from one place rather than re-derived.
+SCROLL_NOTCHES_PER_SCREEN = 15.0
+
+# +1 makes content follow the finger (drag down, page moves down), which is
+# what a touchscreen implies. Flip to -1 for traditional wheel direction.
+SCROLL_DIRECTION = -1
+
 
 def dispose_remote_desktop_session(session) -> bool:
     """Best-effort teardown of a RemoteDesktop session that may have been
@@ -146,6 +160,12 @@ class RemoteInput:
         # desktop, so release_all() can recover from a dropped or missing
         # release. See button() and release_all().
         self._held_buttons: Set[int] = set()
+
+        # Sub-notch scroll carried between deltas. Without this, every delta
+        # smaller than one wheel click rounds to zero and a slow drag never
+        # scrolls at all.
+        self._scroll_accum_x = 0.0
+        self._scroll_accum_y = 0.0
 
     def create(self) -> Optional[str]:
         """Create a RemoteDesktop session and return its SessionId.
@@ -321,6 +341,7 @@ class RemoteInput:
         a button down; also called when a client disconnects
         unexpectedly.
         """
+        self.reset_scroll()
         held = list(self._held_buttons)
         self._held_buttons.clear()
         if self._session is None:
@@ -332,14 +353,54 @@ class RemoteInput:
                 log.debug("RemoteInput.release_all dropped release for %s: %s", code, e)
 
     def axis(self, dx: float, dy: float) -> None:
-        """Notify a scroll delta. Never coalesced — each delta is relative,
-        so dropping one loses scroll distance rather than just staleness."""
+        """Notify a scroll delta, given in NORMALISED [0,1] video units.
+
+        Deltas arrive normalised, like pointer coordinates, so the wire format
+        stays resolution-independent. They must be converted here: a
+        frame-to-frame two-finger drag is around 0.005, and feeding that
+        straight to the compositor scrolls by thousandths of a pixel — which
+        is exactly why scrolling appeared to do nothing at all.
+
+        Discrete wheel steps are used rather than smooth axis deltas. Smooth
+        scrolling support varies by toolkit, while a wheel click is understood
+        universally — including by Chromium-based browsers, where the problem
+        was first seen. The cost is quantisation, which the accumulator below
+        hides: sub-notch movement is carried over rather than discarded, so a
+        slow drag still scrolls instead of being rounded away to nothing.
+
+        Never coalesced: each delta is relative, so dropping one loses scroll
+        distance rather than merely being stale.
+        """
         if self._session is None:
             return
+
+        # Carry the remainder so slow drags accumulate into a notch instead of
+        # being repeatedly rounded to zero.
+        self._scroll_accum_x += dx * SCROLL_NOTCHES_PER_SCREEN
+        self._scroll_accum_y += dy * SCROLL_NOTCHES_PER_SCREEN
+
+        steps_x = int(self._scroll_accum_x)
+        steps_y = int(self._scroll_accum_y)
+        if steps_x == 0 and steps_y == 0:
+            return
+        self._scroll_accum_x -= steps_x
+        self._scroll_accum_y -= steps_y
+
         try:
-            self._session.NotifyPointerAxis(dx, dy, 0)
+            if steps_y:
+                self._session.NotifyPointerAxisDiscrete(
+                    AXIS_VERTICAL, int(steps_y * SCROLL_DIRECTION))
+            if steps_x:
+                self._session.NotifyPointerAxisDiscrete(
+                    AXIS_HORIZONTAL, int(steps_x * SCROLL_DIRECTION))
         except Exception as e:
             log.debug("RemoteInput.axis dropped: %s", e)
+
+    def reset_scroll(self) -> None:
+        """Discard any partial notch. Called when a gesture ends so leftover
+        movement cannot leak into the next, unrelated scroll."""
+        self._scroll_accum_x = 0.0
+        self._scroll_accum_y = 0.0
 
     def stop(self) -> None:
         """Stop the session. Safe to call twice, and safe to call on a
