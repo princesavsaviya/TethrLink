@@ -15,6 +15,7 @@ from gi.repository import Gtk, Gio, GLib
 from server.core.server_core import (
     ServerCore, ServerConfig, ServerState, detect_codec, CODEC_H264,
 )
+from server.core.settings import load_settings, save_settings, resolve_codec, resolve_touch_enabled
 from server.ui.window import TethrLinkWindow
 
 
@@ -49,6 +50,17 @@ class TethrLinkApp(Gtk.Application):
             flags=Gio.ApplicationFlags.FLAGS_NONE,
         )
         self._config     = ServerConfig()
+
+        # Remembered codec/touch choice (~/.config/tethrlink/settings.json —
+        # see server/core/settings.py), applied before the env var overrides
+        # below so TETHRLINK_CODEC/TETHRLINK_TOUCH — testing knobs, not user
+        # settings — still win when set. A missing/corrupt settings file
+        # resolves to exactly ServerConfig()'s own defaults (best-effort;
+        # see settings.py), so this is a no-op on a fresh install.
+        _saved = load_settings()
+        self._config.codec = detect_codec(resolve_codec(_saved))
+        self._config.touch_enabled = resolve_touch_enabled(_saved)
+
         # Codec override for testing/comparison. ServerConfig now defaults to
         # H.264; set TETHRLINK_CODEC=jpeg to fall back to the old path, or
         # TETHRLINK_CODEC=h264 to be explicit about it.
@@ -131,7 +143,7 @@ class TethrLinkApp(Gtk.Application):
             on_start=self._on_start,
             on_stop=self._on_stop,
             on_codec_change=self._on_codec_change,
-            initial_codec="h264" if self._config.codec == CODEC_H264 else "jpeg",
+            initial_codec=self._codec_str(),
             on_touch_change=self._on_touch_change,
             initial_touch_enabled=self._config.touch_enabled,
         )
@@ -170,6 +182,9 @@ class TethrLinkApp(Gtk.Application):
             resolution=s.resolution,
             codec_name=s.codec_name,
             input_active=s.input_active,
+            dropped=s.dropped,
+            overflows=s.overflows,
+            port=s.port,
         )
 
     def _on_log(self, message: str):
@@ -178,13 +193,18 @@ class TethrLinkApp(Gtk.Application):
     def _on_external_stop(self):
         GLib.idle_add(self._do_stop)
 
+    def _codec_str(self) -> str:
+        return "h264" if self._config.codec == CODEC_H264 else "jpeg"
+
     def _on_codec_change(self, codec_str: str):
         self._config.codec = detect_codec(codec_str)
+        save_settings({"codec": codec_str, "touch_enabled": self._config.touch_enabled})
         log.info("Codec set to %s via UI — applies to the next connection",
                  codec_str)
 
     def _on_touch_change(self, enabled: bool):
         self._config.touch_enabled = enabled
+        save_settings({"codec": self._codec_str(), "touch_enabled": enabled})
         log.info(
             "Touch input %s via UI — applies to the next connection",
             "enabled" if enabled else "disabled",

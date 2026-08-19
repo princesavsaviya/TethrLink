@@ -502,6 +502,16 @@ class ServerState:
     # whether a RemoteInput session was actually negotiated and paired.
     # False whenever nothing is connected.
     input_active: bool = False
+    # Per-second counts of frames dropped / queue overflows — sampled in
+    # the same 1-second window as `fps` (see the per-second metrics block
+    # in _handle_client), not the cumulative session total. That choice is
+    # deliberate: StreamMetrics' counters only ever grow, so surfacing the
+    # raw cumulative value would pin a UI's health verdict at "recovering"
+    # forever after a single brief hiccup, long after the stream actually
+    # recovered — which is worse than not showing a verdict at all. 0
+    # whenever nothing is connected.
+    dropped: int = 0
+    overflows: int = 0
     port: int = 0
     active_width: int = 0    # resolved dims from last/current connection
     active_height: int = 0
@@ -2047,7 +2057,8 @@ class ServerCore:
         # shutdown event causes the stream loop to exit and finally runs.
         # Nothing to do here for display/capture.
         self._state.update(running=False, connected=False,
-                           client_name="", fps=0, input_active=False)
+                           client_name="", fps=0, input_active=False,
+                           dropped=0, overflows=0)
         self._log("Server stopped")
 
     def set_quality(self, quality: int) -> None:
@@ -2511,10 +2522,22 @@ class ServerCore:
                                # remote_input is None here and this
                                # correctly reports False.
                                input_active=(self._input_negotiated
-                                             and remote_input is not None))
+                                             and remote_input is not None),
+                               # A fresh connection must not show whatever
+                               # dropped/overflow reading the previous
+                               # session left behind for the ~1s gap before
+                               # this session's own first metrics tick.
+                               dropped=0, overflows=0)
 
             frame_count  = 0
             fps_deadline = time.monotonic() + 1.0
+            # Cumulative StreamMetrics totals as of the last metrics tick,
+            # so the per-second dropped/overflows delta below can be
+            # computed the same way frame_count already is windowed to one
+            # second — see ServerState.dropped's docstring for why a delta
+            # (not the running cumulative total) is what the UI needs.
+            prev_dropped   = 0
+            prev_overflows = 0
 
             # Idle keepalive bookkeeping. `last_sent_monotonic` starts at "now"
             # (stream start), not at zero, so a session that goes idle
@@ -2662,7 +2685,15 @@ class ServerCore:
 
                 if time.monotonic() >= fps_deadline:
                     snap = capture.metrics.snapshot()
-                    self._state.update(fps=frame_count)
+                    # UI-facing dropped/overflows are this second's delta
+                    # against the cumulative StreamMetrics counters, not
+                    # the counters themselves — see ServerState.dropped.
+                    dropped_delta   = snap["frames_dropped"] - prev_dropped
+                    overflows_delta = snap["queue_overflows"] - prev_overflows
+                    prev_dropped    = snap["frames_dropped"]
+                    prev_overflows  = snap["queue_overflows"]
+                    self._state.update(fps=frame_count, dropped=dropped_delta,
+                                       overflows=overflows_delta)
                     log.info(
                         "fps=%d encoded=%d sent=%d dropped=%d dup_suppressed=%d "
                         "overflows=%d keyframe_reqs=%d",
@@ -2686,7 +2717,7 @@ class ServerCore:
         finally:
             self._conn = None
             self._state.update(connected=False, client_name="", fps=0,
-                               input_active=False)
+                               input_active=False, dropped=0, overflows=0)
             # Signal the input reader (if one was started) to stop and give
             # it a bounded window to actually exit — its own finally clause
             # calls RemoteInput.release_all(), and running that before

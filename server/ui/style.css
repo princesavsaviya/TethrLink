@@ -1,196 +1,181 @@
-/* TethrLink GTK4 Dark Theme */
+/* ── Adwaita named colours ────────────────────────────────────────────────────
+ * Adwaita derives every widget state — hover, selection, popovers, dropdown
+ * lists — from these. Overriding individual selectors instead loses to
+ * Adwaita's own defaults in exactly the places that matter most: a combo
+ * row's popover was rendering with Adwaita's bright accent and its own
+ * foreground, leaving the text unreadable. Defining the source colours fixes
+ * all of those states at once, and keeps them inside the Android palette.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+@define-color window_bg_color    #0F0F1A;
+@define-color window_fg_color    #FFFFFF;
+@define-color view_bg_color      #1A1A2E;
+@define-color view_fg_color      #FFFFFF;
+@define-color card_bg_color      #1A1A2E;
+@define-color card_fg_color      #FFFFFF;
+@define-color popover_bg_color   #1A1A2E;
+@define-color popover_fg_color   #FFFFFF;
+@define-color headerbar_bg_color #141426;
+@define-color headerbar_fg_color #FFFFFF;
+@define-color dialog_bg_color    #1A1A2E;
+@define-color dialog_fg_color    #FFFFFF;
+
+/* Accent. accent_fg_color is what sits ON the accent, so it must stay light
+ * or selected text disappears — the exact symptom seen in the dropdown. */
+@define-color accent_bg_color    #7C6AF7;
+@define-color accent_fg_color    #FFFFFF;
+@define-color accent_color       #A594F9;
+
+@define-color success_color      #4ADE80;
+@define-color warning_color      #EAB308;
+@define-color error_color        #EF4444;
+@define-color destructive_color  #EF4444;
+
+/* Alpha-based, so one value works on every surface. */
+@define-color borders            #1AFFFFFF;
+
+/* TethrLink GTK4 + Libadwaita Dark Theme
+ *
+ * Palette mirrors the Android app's (Android is the source of truth: it's
+ * the surface the user actually looks at, and its alpha-based text/border
+ * colors scale across surfaces better than fixed greys would). Adwaita's
+ * own rows/lists/banner default to a light theme regardless of the
+ * color-scheme forced in window.py, so those need colors of their own
+ * here — everything below is drawn from the same eight values.
+ *
+ *   bg_primary     #0F0F1A
+ *   bg_card        #1A1A2E
+ *   border_default #1AFFFFFF  (alpha, so it works on any surface)
+ *   text_primary   #FFFFFF
+ *   text_secondary #99FFFFFF
+ *   brand          #7C6AF7
+ *   brand_pressed  #6455D4
+ *   success        #4ADE80
+ *   warning        #EAB308
+ */
 
 window {
     background-color: #0F0F1A;
     color: #FFFFFF;
 }
 
-/* ── Scrolled container ─────────────────────────────────────────────────────── */
+/* ── Header bar ─────────────────────────────────────────────────────────────── */
 
-.main-scroll {
-    background-color: #0F0F1A;
+headerbar {
+    background-color: #1A1A2E;
+    border-bottom: 1px solid #1AFFFFFF;
+    color: #FFFFFF;
 }
 
-.main-scroll > viewport {
-    background-color: #0F0F1A;
+.app-title {
+    font-weight: 700;
 }
 
-/* ── Welcome / Stopped state ────────────────────────────────────────────────── */
+/* ── Adwaita rows/lists: match the card surface, not Adwaita's own light grey ── */
 
-.welcome-box {
-    padding: 60px 40px;
+preferencesgroup > box > label {
+    color: #99FFFFFF;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
 }
 
-.app-logo {
-    font-size: 48px;
-    font-weight: 800;
-    color: #7C6AF7;
-    letter-spacing: -1px;
+row.activatable:hover {
+    background-color: #1AFFFFFF;   /* border_default — a 10% white wash */
+    color: #FFFFFF;                /* never let hover dim the label */
 }
 
-.app-logo-sub {
-    font-size: 13px;
-    color: #4DFFFFFF;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    margin-top: 4px;
+listview, list, row {
+    background-color: #1A1A2E;
+    color: #FFFFFF;
 }
 
-.welcome-title {
-    font-size: 28px;
+list {
+    border: 1px solid #1AFFFFFF;
+    border-radius: 12px;
+}
+
+row > box > label.subtitle {
+    color: #99FFFFFF;
+    font-size: 12px;
+}
+
+/* ── Hero text (idle / waiting / streaming headlines) ─────────────────────────── */
+
+.hero-title {
+    font-size: 22px;
     font-weight: 700;
     color: #FFFFFF;
-    margin-top: 32px;
 }
 
-.welcome-subtitle {
-    font-size: 15px;
+.hero-sub {
     color: #99FFFFFF;
-    margin-top: 12px;
-    line-height: 1.6;
+    font-size: 13px;
+}
+
+.hero-ok {
+    color: #4ADE80;
+}
+
+.hero-warn {
+    color: #EAB308;
+}
+
+/* ── Stat cards (streaming state) ──────────────────────────────────────────────── */
+
+.stat-card {
+    background-color: #1A1A2E;
+    border: 1px solid #1AFFFFFF;
+    border-radius: 12px;
+}
+
+.stat-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: #FFFFFF;
+}
+
+.stat-label {
+    font-size: 11px;
+    color: #99FFFFFF;
+    letter-spacing: 0.3px;
 }
 
 /* ── Buttons ────────────────────────────────────────────────────────────────── */
 
-.btn-start {
+.pill-primary {
+    background-image: none;
     background-color: #7C6AF7;
     color: #ffffff;
-    font-size: 15px;
-    font-weight: 600;
-    border-radius: 10px;
-    padding: 12px 40px;
     border: none;
-    margin-top: 36px;
-    transition: background-color 150ms ease;
-}
-
-.btn-start:hover {
-    background-color: #6455D4;
-}
-
-.btn-start:active {
-    background-color: #6455D4;
-}
-
-.btn-stop {
-    background-color: #141426;
-    color: #EF4444;
-    font-size: 14px;
+    border-radius: 999px;
+    padding: 10px 30px;
     font-weight: 600;
-    border-radius: 10px;
-    padding: 11px 36px;
-    border: 1px solid #7F1D1D;
-    margin-top: 12px;
-    transition: background-color 150ms ease, border-color 150ms ease;
 }
 
-.btn-stop:hover {
-    background-color: #7F1D1D;
-    border-color: #EF4444;
-}
-
-.btn-apply {
-    background-color: #7C6AF7;
-    color: #ffffff;
-    font-size: 13px;
-    font-weight: 600;
-    border-radius: 8px;
-    padding: 8px 20px;
-    border: none;
-    transition: background-color 150ms ease;
-}
-
-.btn-apply:hover {
+.pill-primary:hover {
     background-color: #6455D4;
 }
 
-.btn-apply:disabled {
-    background-color: #1AFFFFFF;
-    color: #33FFFFFF;
-    border: 1px solid #33FFFFFF;
-}
-
-/* ── Section cards ──────────────────────────────────────────────────────────── */
-
-.section-card {
-    background-color: #1A1A2E;
-    border: 1px solid #1AFFFFFF;
-    border-radius: 12px;
-    padding: 20px;
-    margin: 0 20px 16px 20px;
-}
-
-/* ── Settings rows ──────────────────────────────────────────────────────────── */
-
-.settings-title {
-    font-size: 12px;
-    color: #4DFFFFFF;
-    font-weight: 700;
-    letter-spacing: 1px;
-    text-transform: uppercase;
-}
-
-.settings-divider {
-    min-height: 1px;
-    background-color: #1AFFFFFF;
-}
-
-.setting-name {
-    font-size: 14px;
-    color: #FFFFFF;
-    font-weight: 500;
-}
-
-.setting-hint {
-    font-size: 12px;
-    color: #4DFFFFFF;
-    margin-top: 2px;
-}
-
-.codec-dropdown {
-    background-color: #1AFFFFFF;
-    color: #FFFFFF;
-    font-size: 13px;
-    font-weight: 500;
-    border-radius: 8px;
-    border: 1px solid #33FFFFFF;
-    padding: 4px 8px;
-}
-
-.codec-dropdown:disabled {
-    background-color: #1A1A2E;
-    color: #33FFFFFF;
-    border-color: #1AFFFFFF;
-}
-
-/* ── Status bar (running state header) ──────────────────────────────────────── */
-
-.status-bar {
-    background-color: #1A1A2E;
-    border-bottom: 1px solid #1AFFFFFF;
-    padding: 10px 20px;
-}
-
-.status-dot {
-    font-size: 10px;
-}
-
-.status-dot.connected {
-    color: #4ADE80;
-}
-
-.status-dot.idle {
-    color: #EAB308;
-}
-
-.status-text {
-    font-size: 13px;
+.pill-quiet {
+    background-image: none;
+    background-color: transparent;
     color: #99FFFFFF;
-    font-weight: 500;
+    border: 1px solid #1AFFFFFF;
+    border-radius: 999px;
+    padding: 8px 24px;
 }
 
-.status-fps {
-    font-size: 13px;
-    color: #4ADE80;
-    font-weight: 600;
+.pill-quiet:hover {
+    color: #EAB308;
+    border-color: #EAB308;
+}
+
+/* ── Banner (streaming health warning) ─────────────────────────────────────────── */
+
+banner > revealer > widget {
+    background-color: #1A1A2E;
+    border: 1px solid #EAB308;
+    border-radius: 12px;
+    color: #FFFFFF;
 }
