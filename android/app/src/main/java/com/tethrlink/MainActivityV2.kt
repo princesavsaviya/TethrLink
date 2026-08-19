@@ -1,6 +1,10 @@
 package com.tethrlink
 
+import android.app.KeyguardManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.graphics.Canvas
 import android.os.Bundle
@@ -22,6 +26,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -143,6 +148,16 @@ class MainActivityV2 : AppCompatActivity() {
     // but read/written from the main-thread touch listener.
     @Volatile private var touchGestureActive = false
 
+    // ── Foreground / lock suspension (cooperative, not a security boundary —
+    // the real boundary is server-side; a modified client could ignore this) ──
+    // True whenever input must not be sent even though a session is active:
+    // backgrounded, split-screen, or the screen locked. Touched only from the
+    // main thread (lifecycle callbacks, the registered receiver, and the
+    // touch listener), so unlike the fields above these don't need @Volatile.
+    private var inputSuspended = false
+    private var isActivityResumed = false
+    private var screenOffReceiver: BroadcastReceiver? = null
+
     // ── Back press: reveal/dismiss the streaming overlay ─────────────────────
     // Tapping the surface to reveal the overlay (below) stops working once
     // touch input is active, since the tap now drives the PC pointer instead
@@ -212,12 +227,50 @@ class MainActivityV2 : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, overlayBackCallback)
 
+        // Belt-and-suspenders for the lock case: onPause (below) already
+        // suspends input the moment the activity loses focus, which covers
+        // locking in the normal case, but this reacts the instant the screen
+        // actually turns off regardless of exactly how lifecycle callbacks
+        // land. ACTION_SCREEN_OFF is a protected system broadcast, so
+        // RECEIVER_NOT_EXPORTED is the correct (and required, on API 33+) flag.
+        screenOffReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) = suspendInput()
+        }
+        ContextCompat.registerReceiver(
+            this,
+            screenOffReceiver,
+            IntentFilter(Intent.ACTION_SCREEN_OFF),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+
         startStateLoop()
     }
 
     override fun onResume() {
         super.onResume()
+        isActivityResumed = true
         if (streamJob?.isActive != true) startStateLoop()
+        resumeInputIfInFront()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isActivityResumed = false
+        // Also covers onStop: Android always calls onPause before onStop, so
+        // input is already released by the time the activity is fully hidden.
+        suspendInput()
+    }
+
+    // Split-screen can change without a pause/resume in between (e.g.
+    // dragging the divider), so it needs its own hook. The 1-arg overload is
+    // deprecated in favour of the 2-arg one, but overriding this one is what
+    // actually works from API 24 onward: the platform's default 2-arg
+    // implementation (API 26+) forwards to this method, and API 24-25 —
+    // which predate the 2-arg overload — call this one directly.
+    @Suppress("DEPRECATION")
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode)
+        if (isInMultiWindowMode) suspendInput() else resumeInputIfInFront()
     }
 
     // ── State loop ────────────────────────────────────────────────────────────
@@ -656,6 +709,12 @@ class MainActivityV2 : AppCompatActivity() {
 
     private fun handleSurfaceTouch(event: MotionEvent): Boolean {
         val interpreter = gestureInterpreter ?: return false
+        // Suspended (backgrounded, split-screen, or locked): don't start or
+        // continue a gesture. Anything that was held has already been
+        // released by suspendInput(); falling through here lets the tap
+        // still reach the surface's click listener, same as when input was
+        // never negotiated in the first place.
+        if (inputSuspended) return false
         val viewW = surfaceView.width
         val viewH = surfaceView.height
         if (viewW <= 0 || viewH <= 0) return false
@@ -752,6 +811,43 @@ class MainActivityV2 : AppCompatActivity() {
         }
     }
 
+    // ── Foreground / lock suspension ─────────────────────────────────────────
+
+    private fun isScreenLocked(): Boolean =
+        (getSystemService(KEYGUARD_SERVICE) as? KeyguardManager)?.isKeyguardLocked ?: false
+
+    private fun isInMultiWindowModeCompat(): Boolean =
+        android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N && isInMultiWindowMode
+
+    /**
+     * Releases anything held and clears gesture state, so a button is never
+     * left down on the PC just because the app stopped being in front. Safe
+     * to call at any time, session or no session: with no interpreter
+     * ([gestureInterpreter] null) it degrades to just setting the flag and
+     * cancelling the poll, and [GestureInterpreter.onCancel] itself is a
+     * no-op when nothing is held.
+     */
+    private fun suspendInput() {
+        inputSuspended = true
+        inputHandler.removeCallbacks(longPressPoll)
+        touchGestureActive = false
+        val interpreter = gestureInterpreter ?: return
+        dispatchPointerActions(interpreter.onCancel())
+    }
+
+    /**
+     * Lifts the suspension, but only if the activity is genuinely in front
+     * right now. Called from more than one lifecycle hook, each of which only
+     * knows about its own cause — this re-checks all three so that clearing
+     * one (e.g. the lock screen) can't override another that's still true
+     * (e.g. still in split-screen).
+     */
+    private fun resumeInputIfInFront() {
+        if (isActivityResumed && !isInMultiWindowModeCompat() && !isScreenLocked()) {
+            inputSuspended = false
+        }
+    }
+
     // ── Orientation helpers ───────────────────────────────────────────────────
 
     private fun lockToLandscape() {
@@ -805,5 +901,7 @@ class MainActivityV2 : AppCompatActivity() {
         listenJob?.cancel()
         ioScope.cancel()
         inputHandler.removeCallbacks(longPressPoll)
+        screenOffReceiver?.let { unregisterReceiver(it) }
+        screenOffReceiver = null
     }
 }
