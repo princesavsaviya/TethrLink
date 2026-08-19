@@ -122,6 +122,19 @@ window {
 
 /* ── Settings rows ──────────────────────────────────────────────────────────── */
 
+.settings-title {
+    font-size: 12px;
+    color: #6e7681;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.settings-divider {
+    min-height: 1px;
+    background-color: #21262d;
+}
+
 .setting-name {
     font-size: 14px;
     color: #e6edf3;

@@ -5,9 +5,9 @@ Single scrollable page, two states:
   Stopped:  logo + welcome + Start Server button
   Running:  status bar + "Open Display Settings" link + Stop Server button
 
-A Video Codec card (JPEG/H.264) and a Touch Input toggle sit between the
-two and stay visible in both states. Both are locked while a client is
-connected: the pipeline (and, for touch, the RemoteDesktop pairing) is
+A single Settings card (Video Codec + Touch Input) sits between the two
+and stays visible in both states. Both settings are locked while a client
+is connected: the pipeline (and, for touch, the RemoteDesktop pairing) is
 built once per connection, so a change mid-stream would do nothing.
 """
 
@@ -39,7 +39,7 @@ def _label(text: str, css: str = "", halign=Gtk.Align.START,
 class TethrLinkWindow(Gtk.ApplicationWindow):
 
     # Dropdown row order — index must match the strings passed to
-    # Gtk.DropDown.new_from_strings() in _build_codec_settings().
+    # Gtk.DropDown.new_from_strings() in _build_codec_row().
     _CODEC_VALUES = ("h264", "jpeg")
 
     def __init__(self, app, on_start, on_stop, on_codec_change, initial_codec="h264",
@@ -89,8 +89,7 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
         scroll.set_child(self._root)
 
         self._build_stopped_state()
-        self._build_codec_settings()
-        self._build_touch_settings()
+        self._build_settings_card()
         self._build_status_bar()
         self._build_running_state()
 
@@ -137,27 +136,45 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
         self._stopped_box = box
         self._root.append(box)
 
-    # ── Codec settings ────────────────────────────────────────────────────────
+    # ── Settings card (codec + touch) ────────────────────────────────────────
+    # Both settings are "pick before you connect" choices, locked while a
+    # client is connected — the pipeline (and, for touch, the RemoteDesktop
+    # pairing) is built once per connection, so a change mid-stream would do
+    # nothing. They share one card and one heading instead of each getting
+    # its own card/icon/hint block, since that's the same kind of thing
+    # repeated twice. Display Arrangement below stays a separate card: it's
+    # guidance, not a setting.
 
-    def _build_codec_settings(self):
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    def _build_settings_card(self):
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         card.add_css_class("section-card")
         card.set_margin_top(20)
         card.set_margin_start(28)
         card.set_margin_end(28)
 
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        row.set_valign(Gtk.Align.CENTER)
+        card.append(_label("Settings", "settings-title"))
+        card.append(self._build_codec_row())
 
-        icon = _label("🎞", "", Gtk.Align.START)
-        icon.set_css_classes([])
+        divider = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        divider.add_css_class("settings-divider")
+        card.append(divider)
 
-        desc_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        desc_box.set_hexpand(True)
-        desc_box.append(_label("Video Codec", "setting-name"))
-        desc_box.append(_label(
-            "H.264 is sharper and lighter on bandwidth. A change applies\n"
-            "to the next connection — it's locked while streaming.",
+        card.append(self._build_touch_row())
+
+        self._settings_card = card
+        self._root.append(card)
+
+    def _build_codec_row(self):
+        row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        top.set_valign(Gtk.Align.CENTER)
+
+        name_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        name_box.set_hexpand(True)
+        name_box.append(_label("Video Codec", "setting-name"))
+        name_box.append(_label(
+            "H.264 is sharper and lighter on bandwidth. Applies next connection.",
             "setting-hint", wrap=True,
         ))
 
@@ -171,44 +188,31 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
         self._updating = False
         self._codec_dropdown.connect("notify::selected", self._on_codec_selected)
 
-        row.append(icon)
-        row.append(desc_box)
-        row.append(self._codec_dropdown)
-        card.append(row)
+        top.append(name_box)
+        top.append(self._codec_dropdown)
+        row.append(top)
 
         # What is actually in use for the current session — set only while
         # connected. On the X11 capture path the stream is always JPEG
         # regardless of what's configured, so this can legitimately disagree
         # with the dropdown above.
-        self._active_codec_label = _label("", "setting-hint", Gtk.Align.CENTER)
-        self._active_codec_label.set_margin_top(6)
-        card.append(self._active_codec_label)
+        self._active_codec_label = _label("", "setting-hint")
+        row.append(self._active_codec_label)
 
-        self._codec_card = card
-        self._root.append(card)
+        return row
 
-    # ── Touch input settings ──────────────────────────────────────────────────
+    def _build_touch_row(self):
+        row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
 
-    def _build_touch_settings(self):
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        card.add_css_class("section-card")
-        card.set_margin_top(20)
-        card.set_margin_start(28)
-        card.set_margin_end(28)
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        top.set_valign(Gtk.Align.CENTER)
 
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        row.set_valign(Gtk.Align.CENTER)
-
-        icon = _label("👆", "", Gtk.Align.START)
-        icon.set_css_classes([])
-
-        desc_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        desc_box.set_hexpand(True)
-        desc_box.append(_label("Touch Input", "setting-name"))
-        desc_box.append(_label(
-            "Lets the tablet drive this PC's pointer. Off by default —\n"
-            "a real capability, not just a preference. A change applies\n"
-            "to the next connection — it's locked while streaming.",
+        name_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        name_box.set_hexpand(True)
+        name_box.append(_label("Touch Input", "setting-name"))
+        name_box.append(_label(
+            "Lets the tablet drive this PC's pointer, off by default. "
+            "Applies next connection.",
             "setting-hint", wrap=True,
         ))
 
@@ -221,10 +225,9 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
         self._updating_touch = False
         self._touch_switch.connect("notify::active", self._on_touch_toggled)
 
-        row.append(icon)
-        row.append(desc_box)
-        row.append(self._touch_switch)
-        card.append(row)
+        top.append(name_box)
+        top.append(self._touch_switch)
+        row.append(top)
 
         # What is actually active for the current session — set only while
         # connected, the same way _active_codec_label reports the resolved
@@ -232,12 +235,10 @@ class TethrLinkWindow(Gtk.ApplicationWindow):
         # and still not get it (the client didn't advertise support, or
         # RemoteDesktop pairing failed and the session fell back to
         # video-only), so this reflects that outcome, not the toggle.
-        self._active_touch_label = _label("", "setting-hint", Gtk.Align.CENTER)
-        self._active_touch_label.set_margin_top(6)
-        card.append(self._active_touch_label)
+        self._active_touch_label = _label("", "setting-hint")
+        row.append(self._active_touch_label)
 
-        self._touch_card = card
-        self._root.append(card)
+        return row
 
     # ── Status bar ────────────────────────────────────────────────────────────
 
