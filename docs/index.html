@@ -345,6 +345,21 @@ details p{padding:0 22px 21px;font-size:14.5px;line-height:1.7;max-width:74ch}
 
 /* ═══ CONTACT ═══ */
 .contact{display:grid;grid-template-columns:1.1fr 1fr;gap:40px}
+.alpha{background:linear-gradient(160deg,rgba(74,222,128,.07),rgba(20,20,51,.6));border:1px solid rgba(74,222,128,.26);border-radius:18px;padding:34px}
+.alpha-grid{display:grid;grid-template-columns:1.05fr 1fr;gap:38px;align-items:start}
+.fields{display:grid;gap:14px;margin-top:20px}
+.field label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+.field .hint{display:block;font-size:12.5px;color:var(--muted);font-weight:400;margin-top:3px;line-height:1.5}
+.field input,.field select{width:100%;padding:12px 14px;border-radius:10px;border:1px solid var(--line-lit);background:var(--ink);color:var(--text);font-family:var(--body);font-size:14.5px}
+.field input:focus,.field select:focus{outline:none;border-color:var(--up)}
+.field input::placeholder{color:var(--muted)}
+.alpha-submit{padding:13px 22px;border-radius:10px;border:none;background:var(--up);color:#04120a;font-family:var(--body);font-size:15px;font-weight:700;cursor:pointer;transition:filter .2s;margin-top:4px}
+.alpha-submit:hover:not(:disabled){filter:brightness(1.1)}
+.alpha-submit:disabled{opacity:.6;cursor:default}
+.alpha-steps{list-style:none;display:grid;gap:14px;margin-top:18px}
+.alpha-steps li{display:grid;grid-template-columns:22px 1fr;gap:12px;font-size:14px;color:var(--text-2);line-height:1.6}
+.alpha-steps b{font-family:var(--mono);font-size:12px;color:var(--up);padding-top:2px}
+@media (max-width:820px){.alpha-grid{grid-template-columns:1fr;gap:28px}.alpha{padding:26px 22px}}
 .nl-form{margin-top:18px}
 .nl-row{display:flex;gap:10px}
 .nl-input{
@@ -463,6 +478,7 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
       <li><a href="#how">How it works</a></li>
       <li><a href="#performance">Performance</a></li>
       <li><a href="#install">Install</a></li>
+      <li><a href="#alpha">Alpha test</a></li>
       <li><a href="https://github.com/princesavsaviya/TethrLink" target="_blank" rel="noopener">GitHub</a></li>
     </ul>
     <a href="#install" class="nav-cta">Install</a>
@@ -1056,6 +1072,72 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
   </div>
 </section>
 
+<!-- ══════ ALPHA ══════ -->
+<section class="wrap" id="alpha">
+  <div class="sec-head">
+    <div class="eyebrow">Android alpha</div>
+    <h2>Help test the tablet app.</h2>
+    <p class="lede">
+      The Android client is heading to Google Play, and closed testing needs real
+      devices — different panels, different ROMs, different ideas of what a
+      tethered subnet looks like. If you have an Android tablet and a Linux
+      machine running GNOME on Wayland, you can help.
+    </p>
+  </div>
+
+  <div class="alpha">
+    <div class="alpha-grid">
+      <div>
+        <form id="alpha-form" action="https://formspree.io/f/mvzdqqzo" method="POST">
+          <input type="hidden" name="_subject" value="TethrLink — Android alpha tester"/>
+          <input type="hidden" name="signup_type" value="android-alpha"/>
+          <div class="fields">
+            <div class="field">
+              <label for="a-email">Google account email
+                <span class="hint">The Google account signed in <em>on the tablet</em> — Play ties test access to that exact account, so a different address won't work.</span>
+              </label>
+              <input id="a-email" type="email" name="google_account_email" placeholder="you@gmail.com" required/>
+            </div>
+            <div class="field">
+              <label for="a-device">Tablet
+                <span class="hint">Model and Android version, e.g. "Galaxy Tab S8, Android 14".</span>
+              </label>
+              <input id="a-device" type="text" name="tablet" placeholder="Model and Android version" required/>
+            </div>
+            <div class="field">
+              <label for="a-distro">Linux setup
+                <span class="hint">Distro and session. Touch and the virtual display both need GNOME on Wayland.</span>
+              </label>
+              <input id="a-distro" type="text" name="linux_setup" placeholder="e.g. Ubuntu 24.04, GNOME on Wayland" required/>
+            </div>
+          </div>
+          <button class="alpha-submit" type="submit">Sign up to test</button>
+          <p class="nl-fine">Your address is used to grant Play access and nothing else. No list, no forwarding.</p>
+          <p class="nl-status" id="alpha-status" role="status"></p>
+        </form>
+      </div>
+
+      <div>
+        <h3 style="font-size:17px">What happens next</h3>
+        <ul class="alpha-steps">
+          <li><b>01</b><span>I add your Google account to the closed test and email you the opt-in link.</span></li>
+          <li><b>02</b><span>You accept, install from Play as normal, and it updates like any other app.</span></li>
+          <li><b>03</b><span>Use it. Tell me what breaks — GitHub issues, or just reply to the email.</span></li>
+        </ul>
+        <p style="font-size:13.5px;color:var(--muted);margin-top:20px;line-height:1.65">
+          Play needs testers to stay opted in for the test to count, so please don't
+          opt out straight after installing. You can leave any time once it ships.
+        </p>
+        <p style="font-size:13.5px;color:var(--muted);margin-top:12px;line-height:1.65">
+          Don't want to wait? The APK is on
+          <a href="#install" style="color:var(--text-2)">the release</a> right now — the
+          alpha is about getting the Play build tested, not about early access.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ══════ CONTACT ══════ -->
 <section class="wrap" id="contact">
   <div class="sec-head">
@@ -1151,12 +1233,17 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
 
 /* Newsletter */
 (function(){
-  var form = document.getElementById('nl-form');
-  if(!form) return;
+  var forms = [
+    { form: document.getElementById('nl-form'),    status: 'nl-status',    btn: '.nl-submit',    ok: 'You\u2019re on the list.' },
+    { form: document.getElementById('alpha-form'), status: 'alpha-status', btn: '.alpha-submit', ok: 'Thanks \u2014 you\u2019ll get the Play opt-in link by email.' }
+  ].filter(function(f){ return f.form; });
+  forms.forEach(function(cfg){ wire(cfg); });
+  function wire(cfg){
+  var form = cfg.form;
   form.addEventListener('submit', async function(e){
     e.preventDefault();
-    var status = document.getElementById('nl-status');
-    var btn = form.querySelector('.nl-submit');
+    var status = document.getElementById(cfg.status);
+    var btn = form.querySelector(cfg.btn);
     var label = btn.textContent;
     btn.textContent = 'Sending…'; btn.disabled = true;
     status.className = 'nl-status'; status.textContent = '';
@@ -1180,6 +1267,7 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
     }
     btn.textContent = label; btn.disabled = false;
   });
+  }
 })();
 </script>
 
