@@ -38,6 +38,17 @@ unaffected: the venv is `--system-site-packages`, `gi` resolves to
 
 **Never run bare `pytest`** — use `./venv/bin/python -m pytest`.
 
+**Android build traps.** The gradle wrapper is pinned to a *milestone*
+(pre-release) Gradle, where the app module's `test` task is a lifecycle
+aggregator and rejects `--tests`. Use **`./gradlew testDebugUnitTest --tests
+'*Foo*'`** instead. Also, the default `java` on this machine is a JRE with no
+`javac`, so gradle needs `JAVA_HOME` pointed at a real JDK (PyCharm's bundled
+JBR works). `ANDROID_HOME` is unset; either export it or put
+`sdk.dir=/home/prince/Android/Sdk` in `android/local.properties` (gitignored).
+Android JVM unit tests live in `android/app/src/test/java` with JUnit 4 — no
+Robolectric or instrumentation, because the logic under test is deliberately
+plain Kotlin.
+
 **Environment:** GNOME Shell 46, Wayland, NVIDIA GTX 1650 Ti + Intel UHD
 (Comet Lake). Test device: Samsung SM-X920, reports 2960×1848.
 
