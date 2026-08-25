@@ -2342,14 +2342,16 @@ class ServerCore:
                         except Exception as e2:
                             self._log(f"Virtual display failed: {e2}")
                             display.close()
-                            self._client_lock.release()
-                            conn.close()
+                            # No release()/close() here: this return runs the
+                            # finally below, which already does both. Doing it
+                            # twice raises "release unlocked lock" and skips
+                            # the rest of that finally.
                             return
                     else:
                         self._log(f"Virtual display failed: {e}")
                         display.close()
-                        self._client_lock.release()
-                        conn.close()
+                        # See above: the finally below owns the release and
+                        # the socket close on every exit path from here.
                         return
 
                 self._log("Virtual display ready — arrange windows using System Settings > Displays")
