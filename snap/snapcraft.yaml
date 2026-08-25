@@ -82,8 +82,6 @@ apps:
       # Staged plugins land here; the gnome extension only points GStreamer at
       # the platform snap, so without this the new plugins are invisible.
       GST_PLUGIN_PATH: $SNAP/usr/lib/x86_64-linux-gnu/gstreamer-1.0
-      GST_PLUGIN_SYSTEM_PATH: $SNAP/usr/lib/x86_64-linux-gnu/gstreamer-1.0:$SNAP/gnome-platform/usr/lib/x86_64-linux-gnu/gstreamer-1.0
-      GST_PLUGIN_SCANNER: $SNAP/usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner
 
 parts:
   copy-debian-build:
@@ -93,15 +91,23 @@ parts:
       - python3
       - python3-gi
       - python3-gi-cairo
-      # The gnome extension's platform snap ships 107 GStreamer plugins, but
-      # not the ones H.264 needs: x264enc lives in -ugly and h264parse in
-      # -bad (videoparsersbad). Without these the pipeline fails to build at
-      # connect time with `no element "x264enc"`, the stream errors, and the
-      # client drops back to scanning. JPEG worked throughout because
-      # libgstjpeg is in the platform.
+
+  # The gnome platform ships 107 GStreamer plugins but not the two H.264
+  # needs: x264enc lives in -ugly, h264parse in -bad (videoparsersbad).
+  # Without them the pipeline fails to build at connect time with
+  # `no element "x264enc"` and the client drops back to scanning.
+  #
+  # Only the two plugin binaries are primed. Staging these packages whole
+  # pulls in ~500 libraries including a full GTK3 stack, which shadows the
+  # platform's GTK4 and breaks the app before it starts (undefined symbol:
+  # hb_free, from a mismatched libharfbuzz). Their actual dependencies —
+  # libx264.so.164 and libgstcodecparsers — are already in the platform,
+  # so nothing else has to ship.
+  gst-h264-plugins:
+    plugin: nil
+    stage-packages:
       - gstreamer1.0-plugins-ugly
       - gstreamer1.0-plugins-bad
-      # Hardware encoding. Optional at runtime — encoder.py probes and falls
-      # back to x264enc — but without it every snap user is on software
-      # encoding regardless of their GPU.
-      - gstreamer1.0-vaapi
+    prime:
+      - usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstx264.so
+      - usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstvideoparsersbad.so
