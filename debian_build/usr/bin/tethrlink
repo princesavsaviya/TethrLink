@@ -2,4 +2,10 @@
 # Use $SNAP prefix when running inside a snap, fall back to /usr for .deb installs
 _LIB="${SNAP:+$SNAP}/usr/lib/tethrlink"
 export PYTHONPATH="${_LIB}:${PYTHONPATH}"
+# Run from the library dir. `python3 -m` puts the current working directory
+# first on sys.path, so launching from any directory that happens to contain a
+# `server/` package imports that instead of ours — which silently ran a user's
+# source tree instead of the installed code. Not using -P/-I here: -P needs
+# Python 3.11 and we support 3.10, and -I would discard PYTHONPATH.
+cd "${_LIB}" || exit 1
 exec python3 -m server.app.main "$@"
