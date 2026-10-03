@@ -705,8 +705,18 @@ class MainActivityV2 : AppCompatActivity() {
                 val input = DataInputStream(socket.getInputStream())
 
                 val deviceName = android.os.Build.MODEL.toByteArray()
-                val screenW    = windowManager.currentWindowMetrics.bounds.width()
-                val screenH    = windowManager.currentWindowMetrics.bounds.height()
+                // currentWindowMetrics only exists from API 30 (Android 11);
+                // calling it on older devices throws NoSuchMethodError, which
+                // is an Error (not Exception) and so escapes the catch below.
+                val (screenW, screenH) =
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                        windowManager.currentWindowMetrics.bounds.let { it.width() to it.height() }
+                    } else {
+                        @Suppress("DEPRECATION")
+                        val dm = android.util.DisplayMetrics()
+                            .also { windowManager.defaultDisplay.getRealMetrics(it) }
+                        dm.widthPixels to dm.heightPixels
+                    }
                 val screenDims = java.nio.ByteBuffer.allocate(8)
                     .putInt(screenW).putInt(screenH).array()
 
