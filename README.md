@@ -92,7 +92,12 @@ The venv **must** use `--system-site-packages`. The GObject and GStreamer bindin
 
 ### Android app
 
-Build from `android/` in Android Studio and install on the tablet.
+Download `tethrlink.apk` from the [latest release](https://github.com/princesavsaviya/TethrLink/releases/latest)
+and install it on the tablet, or build from `android/` in Android Studio.
+
+The server and the client are released together and should match. Every
+release, what it changed and the Android versions it supports is listed at
+**[tethrlink.princesavsaviya.com/releases.html](https://tethrlink.princesavsaviya.com/releases.html)**.
 
 ---
 
@@ -254,12 +259,50 @@ TethrLink/
 │   └── ui/window.py           # GTK4 window
 ├── android/                   # Kotlin client (Compose, MediaCodec, gesture interpreter)
 ├── tools/
-│   └── diagnose_capture_stall.py   # Isolates capture stalls from the rest of the pipeline
+│   ├── diagnose_capture_stall.py   # Isolates capture stalls from the rest of the pipeline
+│   └── sync_version.py        # Writes one version into all four files that carry one
 ├── tests/                     # Python unit tests
-└── docs/                      # Landing page, design specs and implementation plans
+└── docs/                      # Landing page, releases page, specs and plans
+    ├── index.html             # Landing page
+    ├── releases.html          # Renders releases.json; no build step
+    └── releases.json          # The release manifest, newest first
 ```
 
 Run the Python tests with `./venv/bin/python -m pytest`. The Android gesture, codec and geometry logic is pure Kotlin with no Android imports, and its tests run on the plain JVM via `./gradlew test`.
+
+---
+
+## Releasing
+
+The version number lives in four files — `setup.py`, `snap/snapcraft.yaml`,
+`android/app/build.gradle.kts` and `debian_build/DEBIAN/control`. They have
+drifted before, shipping an APK that announced a version the server had moved
+past, so they are written together rather than by hand:
+
+```bash
+python3 tools/sync_version.py 2.1.0
+```
+
+`tests/test_sync_version.py` then fails the build if the four ever disagree
+again.
+
+Build the artifacts, under the fixed asset names the site's download buttons
+depend on — `tethrlink_all.deb` and `tethrlink.apk`. Renaming either breaks
+every download link on the live page:
+
+```bash
+./build_deb.sh
+```
+
+Then add an entry to the top of `docs/releases.json` and publish a GitHub
+release under the matching `vX.Y.Z` tag. `docs/releases.html` renders the
+manifest, so the public release history updates with it; the schema is pinned
+by `tests/test_releases_manifest.py`.
+
+`main` is the published branch — it carries `docs/CNAME` and is what GitHub
+Pages serves — and is a curated subset of `develop`, without `tests/`,
+`tools/`, `pytest.ini` or `docs/superpowers/`. Changes reach it by
+cherry-pick, never by merging `develop` into it.
 
 ---
 
