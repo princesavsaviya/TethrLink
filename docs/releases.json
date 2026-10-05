@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "releases": [
+    {
+      "version": "2.0.2",
+      "tag": "v2.0.2",
+      "date": "2026-10-05",
+      "android": { "minSdk": 21, "minLabel": "Android 5.0", "targetSdk": 35 },
+      "summary": "Reliability fixes, and the .deb becomes the only Linux package.",
+      "changes": [
+        "Discovery no longer stops for good after a single failed broadcast — a refused cycle costs one announcement instead of every future one.",
+        "Android discovery survives the server going away and coming back, instead of sticking on \"No server found yet\".",
+        "The client lock is released once rather than twice when the virtual display fails, so a reconnect is no longer answered as busy.",
+        "The .deb declares python3-dbus, without which the app failed at startup on a machine that did not already have it.",
+        "The .deb installs its files as root rather than under the build machine's user account.",
+        "The Snap package is no longer offered: strict confinement cannot create the virtual display at all, because Mutter's ScreenCast API is private and no snapd interface grants it."
+      ],
+      "assets": { "deb": "tethrlink_all.deb", "apk": "tethrlink.apk" }
+    },
+    {
+      "version": "2.0.1",
+      "tag": "v2.0.1",
+      "date": "2026-08-25",
+      "android": { "minSdk": 21, "minLabel": "Android 5.0", "targetSdk": 35 },
+      "summary": "Packaging fixes so the snap ships the H.264 plugins it needs and launches from the right directory.",
+      "changes": [
+        "Snap bundles the two GStreamer plugins H.264 actually requires.",
+        "The launcher runs from the library directory, so the working directory can no longer shadow the install."
+      ],
+      "assets": { "deb": "tethrlink_all.deb", "apk": "tethrlink.apk" }
+    },
+    {
+      "version": "2.0.0",
+      "tag": "v2.0.0",
+      "date": "2026-08-19",
+      "android": { "minSdk": 21, "minLabel": "Android 5.0", "targetSdk": 35 },
+      "summary": "Touch input: the tablet can drive the pointer, plus hardware H.264 and a rebuilt site.",
+      "changes": [
+        "Tap, drag, right-click and scroll on the tablet move the pointer on the PC.",
+        "Touch is off by default and negotiated per connection; old clients are unaffected.",
+        "The server serves only peers on a USB-attached interface, detected at runtime.",
+        "Hardware H.264 encoding with runtime encoder probing."
+      ],
+      "assets": { "deb": "tethrlink_all.deb", "apk": "tethrlink.apk" }
+    },
+    {
+      "version": "1.0.0",
+      "tag": "v1.0.0",
+      "date": "2026-04-20",
+      "android": { "minSdk": 21, "minLabel": "Android 5.0", "targetSdk": 34 },
+      "summary": "First public release — a real second display over USB, streamed as JPEG.",
+      "changes": [
+        "GNOME ScreenCast capture of a dedicated virtual monitor.",
+        "Automatic server discovery over the USB tether.",
+        "Debian package and Android client."
+      ],
+      "assets": { "deb": "tethrlink_1.0.0_amd64.deb", "apk": "tethrlink_1.0.0_android.apk" }
+    }
+  ]
+}
