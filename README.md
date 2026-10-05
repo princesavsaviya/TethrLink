@@ -49,19 +49,22 @@ Video goes down the cable; with touch enabled, pointer intent comes back up the 
 
 ## Installation
 
-### Snap
+### Debian/Ubuntu package (.deb)
+
+Download the latest release and install it:
 
 ```bash
-sudo snap install tethrlink
+wget https://github.com/princesavsaviya/TethrLink/releases/latest/download/tethrlink_all.deb
+sudo apt install ./tethrlink_all.deb
 ```
 
-### Debian/Ubuntu package (.deb)
+Or build it from the current source tree:
 
 ```bash
 git clone https://github.com/princesavsaviya/TethrLink.git
 cd TethrLink
 ./build_deb.sh
-sudo apt install ./tethrlink_2.0.0_all.deb
+sudo apt install ./tethrlink_2.0.2_all.deb
 ```
 
 `build_deb.sh` copies the current `server/` source tree and pulls in `mss` and `qrcode[pil]` via pip; `apt` then resolves the GStreamer, GTK4 and Libadwaita dependencies declared in the package. You get a `tethrlink` launcher, a desktop entry and an icon through normal `apt`/`dpkg` mechanisms. Uninstall with `sudo apt remove tethrlink`.
@@ -266,7 +269,7 @@ Run the Python tests with `./venv/bin/python -m pytest`. The Android gesture, co
 |---|---|
 | MJPEG over USB, length-prefixed TCP framing | Done |
 | GStreamer pipeline, Mutter virtual display | Done |
-| UDP auto-discovery, Snap and Debian packaging | Done |
+| UDP auto-discovery and Debian packaging | Done |
 | Hardware H.264 with runtime encoder negotiation | Done (1.1.0) |
 | Device-derived display geometry | Done (1.1.0) |
 | Touch input — pointer, click, right-click, scroll | Done (2.0.0) |
