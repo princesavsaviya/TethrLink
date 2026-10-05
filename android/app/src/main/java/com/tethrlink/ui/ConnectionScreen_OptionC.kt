@@ -40,6 +40,14 @@ fun ConnectionScreen_OptionC(
     state: ConnectionState,
     tetherAddress: String?,
     hasRememberedServer: Boolean,
+    // The real discovery log, owned by the activity. This used to be a
+    // hardcoded script played out on a timer, which meant the panel always
+    // ended on "No server found yet, retrying..." no matter what was
+    // actually happening — and named a port (5353) and subnet
+    // (192.168.42.0/24) the app has not used in a long time. A diagnostic
+    // panel that cannot show a failure is worse than none: issue #2 was
+    // reported with a screenshot of it, and the screenshot said nothing.
+    logLines: List<String>,
     onEnableTether: () -> Unit,
     onStartExtending: () -> Unit,
     onConnectToLastKnown: () -> Unit
@@ -55,7 +63,6 @@ fun ConnectionScreen_OptionC(
     val step4Active = state is ConnectionState.ServerFound
 
     var pulseState by remember { mutableStateOf(0) }
-    var logMessages by remember { mutableStateOf(listOf("USB tethering active...", "Starting broadcast listener...")) }
 
     // Guidance only earns its place once scanning has had a real chance to
     // succeed on its own — showing it instantly would just be noise, and an
@@ -83,18 +90,6 @@ fun ConnectionScreen_OptionC(
 
     LaunchedEffect(Unit) {
         while (true) { pulseState = (pulseState + 1) % 4; delay(700) }
-    }
-    LaunchedEffect(state) {
-        if (state == ConnectionState.Scanning) {
-            logMessages = listOf("USB tethering active...", "Starting broadcast listener...")
-            val extras = listOf(
-                "Binding to 192.168.42.0/24...",
-                "Listening on UDP port 5353...",
-                "Waiting for TethrLink broadcast...",
-                "No server found yet, retrying..."
-            )
-            for (msg in extras) { delay(1800); logMessages = (logMessages + msg).takeLast(4) }
-        }
     }
     LaunchedEffect(state) {
         showScanGuidance = false
@@ -299,8 +294,8 @@ fun ConnectionScreen_OptionC(
                     ) {
                         Text("▸ TETHRLINK LOG", color = Color(0xFF8B5CF6).copy(0.7f), fontSize = 10.sp, letterSpacing = 0.06.sp)
                         Spacer(Modifier.height(6.dp))
-                        logMessages.forEachIndexed { i, msg ->
-                            val c = if (i == logMessages.size - 1) Color(0xFFA7F3D0).copy(0.8f) else Color.White.copy(0.3f)
+                        logLines.forEachIndexed { i, msg ->
+                            val c = if (i == logLines.size - 1) Color(0xFFA7F3D0).copy(0.8f) else Color.White.copy(0.3f)
                             Row {
                                 Text("$ ", color = Color(0xFF6366F1).copy(0.6f), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                                 Text(msg, color = c, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
@@ -531,21 +526,27 @@ private fun ConnInfoRow_C(label: String, value: String) {
 
 @Preview(showBackground = true, backgroundColor = 0xFF070714)
 @Composable fun PreviewConnC_NoUSB() = ConnectionScreen_OptionC(
-    ConnectionState.NoUsb, tetherAddress = null, hasRememberedServer = false, {}, {}, {}
+    ConnectionState.NoUsb, tetherAddress = null, hasRememberedServer = false,
+    logLines = emptyList(), onEnableTether = {}, onStartExtending = {}, onConnectToLastKnown = {}
 )
 
 @Preview(showBackground = true, backgroundColor = 0xFF070714)
 @Composable fun PreviewConnC_TetherOff() = ConnectionScreen_OptionC(
-    ConnectionState.TetherOff, tetherAddress = null, hasRememberedServer = false, {}, {}, {}
+    ConnectionState.TetherOff, tetherAddress = null, hasRememberedServer = false,
+    logLines = emptyList(), onEnableTether = {}, onStartExtending = {}, onConnectToLastKnown = {}
 )
 
 @Preview(showBackground = true, backgroundColor = 0xFF070714)
 @Composable fun PreviewConnC_Scanning() = ConnectionScreen_OptionC(
-    ConnectionState.Scanning, tetherAddress = "10.125.32.147", hasRememberedServer = true, {}, {}, {}
+    ConnectionState.Scanning, tetherAddress = "10.125.32.147", hasRememberedServer = true,
+    logLines = listOf("USB tethering active...", "Listening on UDP port 8765...", "Waiting for TethrLink broadcast..."),
+    onEnableTether = {}, onStartExtending = {}, onConnectToLastKnown = {}
 )
 
 @Preview(showBackground = true, backgroundColor = 0xFF070714)
 @Composable fun PreviewConnC_ServerFound() = ConnectionScreen_OptionC(
     ConnectionState.ServerFound("prince-desktop", "192.168.42.129", "Linux x86_64"),
-    tetherAddress = "10.125.32.147", hasRememberedServer = true, {}, {}, {}
+    tetherAddress = "10.125.32.147", hasRememberedServer = true,
+    logLines = listOf("Server found: prince-desktop (192.168.42.129)"),
+    onEnableTether = {}, onStartExtending = {}, onConnectToLastKnown = {}
 )
