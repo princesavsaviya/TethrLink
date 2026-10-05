@@ -45,6 +45,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.DataInputStream
@@ -73,6 +74,14 @@ class MainActivityV2 : AppCompatActivity() {
     private val SILENT_FRAME_LIMIT_MS = 3000L
     private val PRE_STREAM_DELAY_MS   = 500L
     private val READ_BUF_SIZE         = 1024 * 1024
+    // Bounded blocking receive, so a superseded discovery listener notices
+    // it has been cancelled instead of parking in receive() until a packet
+    // happens to arrive.
+    private val DISCOVERY_RECEIVE_TIMEOUT_MS = 1000
+    // Backoff before rebuilding discovery after it failed outright (e.g. the
+    // port could not be bound), so a persistent failure retries calmly
+    // rather than spinning.
+    private val DISCOVERY_RESTART_DELAY_MS   = 2000L
 
     // ── Protocol magic bytes ──────────────────────────────────────────────────
     private val MAGIC_HELLO = "TLHELO".toByteArray()
@@ -134,10 +143,31 @@ class MainActivityV2 : AppCompatActivity() {
     private var stateJob:      Job? = null
     private var discoverySocket: DatagramSocket? = null
 
+    // Bumped every time a discovery listener is started. Each listener
+    // captures its value at launch and only touches `discoverySocket` while
+    // it still matches. Without this, a listener that had been logically
+    // replaced would run its teardown later — it blocks in receive(), so it
+    // wakes on the next beacon, i.e. exactly when the server comes back —
+    // and close the socket belonging to whichever listener replaced it,
+    // killing discovery for the rest of the app's life (issue #2).
+    private val discoveryGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+
+    // True from the moment a stream attempt starts until its teardown has
+    // finished with it. Discovery's loop guard reads this instead of
+    // `streamJob?.isActive`: that job is still active while running the very
+    // finally block that restarts discovery, so a fresh listener could see
+    // "still streaming" and exit before its first receive().
+    @Volatile private var streaming = false
+
     private var frameCount  = 0
     private var fpsLastTime = System.currentTimeMillis()
 
     private val logLines = mutableListOf<String>()
+    // The same lines, as Compose state. The Scanning screen used to render a
+    // hardcoded script on a timer while these real lines went nowhere, so
+    // the panel always ended on "No server found yet, retrying..." whatever
+    // had actually happened.
+    private val logState = mutableStateOf<List<String>>(emptyList())
 
     // ── Touch input state (set up per connection, torn down on disconnect) ────
     // Written from the streaming coroutine (IO dispatcher), read from the main
@@ -207,6 +237,7 @@ class MainActivityV2 : AppCompatActivity() {
                 state = connectionState.value,
                 tetherAddress = tetherAddressState.value,
                 hasRememberedServer = hasRememberedServerState.value,
+                logLines = logState.value,
                 onEnableTether = {
                     try {
                         startActivity(Intent("android.settings.TETHER_SETTINGS"))
@@ -272,7 +303,10 @@ class MainActivityV2 : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         isActivityResumed = true
-        if (streamJob?.isActive != true) startStateLoop()
+        // `streaming` rather than `streamJob?.isActive`: during a busy-retry
+        // hand-off the old job is finished while a new attempt is already
+        // pending, and restarting the state loop there would cancel it.
+        if (!streaming) startStateLoop()
         resumeInputIfInFront()
     }
 
@@ -437,22 +471,37 @@ class MainActivityV2 : AppCompatActivity() {
     private fun appendLog(line: String) {
         logLines.add(line)
         if (logLines.size > 6) logLines.removeAt(0)
+        // Snapshot — the caller keeps mutating `logLines`, and Compose needs
+        // a value that won't change underneath it.
+        logState.value = logLines.toList()
     }
 
     private fun startDiscoveryListener(autoConnectIp: String? = null,
                                        autoConnectPort: Int = DEFAULT_SERVER_PORT) {
+        // Claim a generation before touching anything. Each listener only
+        // ever writes or clears `discoverySocket` while it is still the
+        // current generation — see the teardown at the bottom of this
+        // function for why that matters.
+        val generation = discoveryGeneration.incrementAndGet()
+
         listenJob?.cancel()
         discoverySocket?.close()
         discoverySocket = null
 
-        if (autoConnectIp == null) {
-            discoveredIp   = null
-            discoveredPort = DEFAULT_SERVER_PORT
-        }
+        // Forget the previously discovered server on every entry, including
+        // the reconnect path (which used to deliberately keep it). The
+        // announce below only fires when a beacon differs from
+        // `discoveredIp`/`discoveredPort`, so carrying the old values over
+        // meant the *same* server could never be announced again after a
+        // failed session: its beacons kept arriving, kept comparing equal,
+        // and the screen sat on Scanning while the server was in fact being
+        // heard the whole time.
+        discoveredIp   = null
+        discoveredPort = DEFAULT_SERVER_PORT
 
         logLines.clear()
+        logState.value = emptyList()
         appendLog("USB tethering active...")
-        appendLog("Starting broadcast listener...")
         appendLog("Listening on UDP port $DISCOVERY_PORT...")
         appendLog("Waiting for TethrLink broadcast...")
 
@@ -460,6 +509,10 @@ class MainActivityV2 : AppCompatActivity() {
             var pendingIp   = autoConnectIp
             var pendingPort = autoConnectPort
             var lastSeenTimestamp = System.currentTimeMillis()
+            // Set only when the listener stops for a reason that leaves
+            // nothing else driving discovery, so the teardown knows whether
+            // it has to bring it back up.
+            var needsRestart = false
 
             val watchdog = launch {
                 while (true) {
@@ -473,28 +526,80 @@ class MainActivityV2 : AppCompatActivity() {
                     // If server beacon stops arriving for 5 s, drop back to scanning
                     if (connectionState.value is ConnectionState.ServerFound &&
                         (now - lastSeenTimestamp) > 5000) {
+                        // Forget the server, don't just stop showing it. The
+                        // announce in the receive loop only fires when a
+                        // beacon's ip/port *differ* from these, so demoting
+                        // the UI while leaving them set meant the very same
+                        // server could never be announced again: its beacons
+                        // kept arriving, kept comparing equal, and the screen
+                        // sat on Scanning for good. That is precisely "stop
+                        // the server, start it again, the tablet never finds
+                        // it" — and the scripted log panel made it look like
+                        // nothing was arriving at all.
+                        discoveredIp   = null
+                        discoveredPort = DEFAULT_SERVER_PORT
                         showConnectionState(ConnectionState.Scanning)
                     }
                 }
             }
 
+            // Owned by this coroutine. `discoverySocket` is only a handle for
+            // closing the *current* listener from outside; teardown closes
+            // this local reference, never whatever the field happens to hold
+            // by then.
+            var socket: DatagramSocket? = null
             try {
-                val socket = DatagramSocket(null).also {
+                val sock = DatagramSocket(null).also {
                     it.reuseAddress = true
                     it.bind(InetSocketAddress(DISCOVERY_PORT))
                     it.broadcast = true
+                    // Bounded receive. receive() is a blocking call that
+                    // coroutine cancellation cannot interrupt, so without a
+                    // timeout a listener that had already been replaced
+                    // would stay parked in it until the next packet arrived
+                    // — which is precisely when the server comes back — and
+                    // only then run its teardown.
+                    it.soTimeout = DISCOVERY_RECEIVE_TIMEOUT_MS
                 }
-                discoverySocket = socket
-                val buf    = ByteArray(1024)
+                socket = sock
+                if (generation != discoveryGeneration.get()) return@launch
+                discoverySocket = sock
+
+                val buf    = ByteArray(2048)
                 val packet = DatagramPacket(buf, buf.size)
 
-                while (streamJob?.isActive != true) {
+                // `isActive` is this coroutine's own cancellation state, and
+                // `streaming` is cleared by startStreaming's teardown before
+                // it restarts discovery. The old guard read
+                // `streamJob?.isActive`, which is still true while that very
+                // job is running the finally block calling this function —
+                // so a fresh listener could evaluate it, find the stream
+                // "still active", and exit before its first receive(),
+                // leaving discovery dead with nothing to restart it.
+                while (isActive && !streaming) {
+                    // A DatagramPacket keeps the *received* length after
+                    // each receive(), so without resetting it the buffer
+                    // shrinks to the smallest beacon seen so far and every
+                    // longer one afterwards is silently truncated.
+                    packet.length = buf.size
                     try {
-                        socket.receive(packet)
+                        sock.receive(packet)
+                    } catch (_: java.net.SocketTimeoutException) {
+                        continue
                     } catch (_: java.net.SocketException) {
                         break
                     }
-                    val json = JSONObject(String(packet.data, 0, packet.length, Charsets.UTF_8))
+
+                    // One malformed or truncated datagram must never end
+                    // discovery. This parse used to sit unguarded in the
+                    // loop, so a single bad packet threw straight past the
+                    // loop into teardown and discovery stayed dead for the
+                    // rest of the app's life.
+                    val json = try {
+                        JSONObject(String(packet.data, 0, packet.length, Charsets.UTF_8))
+                    } catch (_: Exception) {
+                        continue
+                    }
                     if (json.optString("app") != "TethrLink") continue
 
                     lastSeenTimestamp = System.currentTimeMillis()
@@ -508,7 +613,13 @@ class MainActivityV2 : AppCompatActivity() {
 
                     if (!isUsbTetherIp(ip)) continue
 
-                    appendLog("Server found: $hostname ($ip)")
+                    // Only when something changed: one beacon arrives every
+                    // two seconds, and logging each one filled the six-line
+                    // panel with copies of a single message, pushing out the
+                    // errors that actually explain a failure.
+                    if (ip != discoveredIp || port != discoveredPort) {
+                        appendLog("Server found: $hostname ($ip)")
+                    }
 
                     if (pendingIp != null && ip == pendingIp) {
                         pendingIp = null
@@ -536,14 +647,32 @@ class MainActivityV2 : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) {
-                if (!e.message.orEmpty().contains("Socket closed") &&
-                    listenJob?.isActive == true) {
+                if (isActive) {
                     appendLog("Discovery error: ${e.message}")
+                    needsRestart = true
                 }
             } finally {
                 watchdog.cancel()
-                discoverySocket?.close()
-                discoverySocket = null
+                try { socket?.close() } catch (_: Exception) {}
+                // Only disown the shared handle if it is still ours. A
+                // listener that has been superseded must not clear — or
+                // close — the socket its replacement is sitting on.
+                if (generation == discoveryGeneration.get()) {
+                    discoverySocket = null
+                    // Nothing else is driving discovery and no stream took
+                    // over, so bring it back rather than leaving the app
+                    // silently deaf. Delayed and launched outside this
+                    // (now-completing) job so a listener that cannot bind
+                    // retries rather than spinning.
+                    if (needsRestart && !streaming) {
+                        ioScope.launch {
+                            delay(DISCOVERY_RESTART_DELAY_MS)
+                            if (generation == discoveryGeneration.get() && !streaming) {
+                                startStateLoop()
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -552,7 +681,24 @@ class MainActivityV2 : AppCompatActivity() {
 
     private fun startStreaming(ip: String, port: Int, busyRetries: Int = 5) {
         listenJob?.cancel()
+        // Set synchronously, before the job exists, so a discovery listener
+        // can never observe "not streaming" in the window between launching
+        // this coroutine and it actually starting.
+        streaming = true
         streamJob = ioScope.launch {
+            // True when this attempt has handed the session over to another
+            // startStreaming call (the busy-retry below). The teardown must
+            // then leave `streaming` alone and not restart discovery, or it
+            // would tear down the very attempt it just spawned.
+            var handedOff = false
+            // Hoisted so the teardown can reach them on the failure paths
+            // too. The render loop in particular used to be cancelled only
+            // after a clean exit from the read loop, so any stream error
+            // left it spinning on the main thread for the life of the app —
+            // and because it tested `streamJob?.isActive`, which points at
+            // whichever job is *current*, each reconnect revived every
+            // orphan rather than letting it stop.
+            var renderJob: Job? = null
             try {
                 val socket = Socket()
                 socket.connect(InetSocketAddress(ip, port), CONNECT_TIMEOUT_MS)
@@ -576,6 +722,7 @@ class MainActivityV2 : AppCompatActivity() {
                         if (busyRetries > 0) {
                             appendLog("Server busy, retrying… ($busyRetries attempts left)")
                             delay(2000)
+                            handedOff = true
                             startStreaming(ip, port, busyRetries - 1)
                         } else {
                             throw Exception("Server busy after all retries")
@@ -682,8 +829,10 @@ class MainActivityV2 : AppCompatActivity() {
                     onBitmap = { bmp -> latestBitmap.set(bmp) }
                 )
 
-                val renderJob = ioScope.launch(Dispatchers.Main) {
-                    while (streamJob?.isActive == true) {
+                renderJob = ioScope.launch(Dispatchers.Main) {
+                    // `isActive` is this render coroutine's own state, so
+                    // cancelling it actually stops it.
+                    while (isActive) {
                         val bmp = latestBitmap.getAndSet(null)
                         if (bmp != null) drawFrame(bmp)
                         kotlinx.coroutines.delay(1)
@@ -693,7 +842,7 @@ class MainActivityV2 : AppCompatActivity() {
                 var readBuf       = ByteArray(READ_BUF_SIZE)
                 var lastFrameTime = System.currentTimeMillis()
 
-                while (streamJob?.isActive == true) {
+                while (isActive) {
                     val frameSize = try {
                         input.readInt()
                     } catch (e: java.net.SocketTimeoutException) {
@@ -727,14 +876,27 @@ class MainActivityV2 : AppCompatActivity() {
                 gestureInterpreter = null
                 touchGestureActive = false
                 inputHandler.removeCallbacks(longPressPoll)
+                renderJob?.cancel()
 
-                if (isUsbTetherActive()) {
-                    withContext(Dispatchers.Main) { unlockOrientation() }
-                    showConnectionState(ConnectionState.Scanning)
-                    startDiscoveryListener(autoConnectIp = ip, autoConnectPort = port)
-                } else {
-                    withContext(Dispatchers.Main) { unlockOrientation() }
-                    startStateLoop()
+                // A retry already owns the session — leave `streaming` set
+                // and don't restart discovery underneath it.
+                if (!handedOff) {
+                    // Cleared *before* discovery is restarted. The listener's
+                    // loop guard reads this, and it used to read
+                    // `streamJob?.isActive` instead — still true right here,
+                    // inside this job's own finally — so the fresh listener
+                    // could exit before its first receive() and discovery
+                    // would die silently with nothing to bring it back.
+                    streaming = false
+
+                    if (isUsbTetherActive()) {
+                        withContext(Dispatchers.Main) { unlockOrientation() }
+                        showConnectionState(ConnectionState.Scanning)
+                        startDiscoveryListener(autoConnectIp = ip, autoConnectPort = port)
+                    } else {
+                        withContext(Dispatchers.Main) { unlockOrientation() }
+                        startStateLoop()
+                    }
                 }
             }
         }
