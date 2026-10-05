@@ -186,3 +186,89 @@ def test_loopback_broadcast_is_still_sent_and_unbound(monkeypatch):
         (b"PACKET", ("127.255.255.255", discovery.BROADCAST_PORT))
     ]
     assert created[0].closed is True
+
+
+# ── Socket construction failures must not kill the broadcaster ─────────────
+#
+# The bug these pin: both helpers built their socket *outside* the try, so an
+# exception from socket() itself — not from bind/sendto — escaped the helper,
+# escaped _broadcast_loop, and killed the broadcaster thread for the rest of
+# the process's life. Observed in the wild as
+# `PermissionError: [Errno 13] Permission denied` at discovery.py:105 inside
+# the snap, after which the server never announced itself again and the
+# Android app could not find it. A failed cycle must cost one announcement,
+# never the whole loop.
+
+def _install_failing_socket(monkeypatch, exc):
+    def factory(*args, **kwargs):
+        raise exc
+    monkeypatch.setattr(discovery.socket, "socket", factory)
+
+
+def test_loopback_socket_creation_failure_does_not_raise(monkeypatch):
+    _install_failing_socket(monkeypatch, PermissionError(13, "Permission denied"))
+
+    _broadcaster()._send_loopback_broadcast(b"PACKET")  # must not raise
+
+
+def test_tether_socket_creation_failure_does_not_raise(monkeypatch):
+    monkeypatch.setattr(
+        discovery, "usb_tether_source_addresses", lambda: ["10.125.32.247"]
+    )
+    _install_failing_socket(monkeypatch, PermissionError(13, "Permission denied"))
+
+    _broadcaster()._send_tether_broadcasts(b"PACKET")  # must not raise
+
+
+def test_tether_socket_creation_failure_still_tries_the_next_address(monkeypatch):
+    """One interface failing at socket() must not cost the others their
+    announcement — the same guarantee bind() failures already have."""
+    monkeypatch.setattr(
+        discovery, "usb_tether_source_addresses",
+        lambda: ["10.125.32.247", "192.168.42.1"],
+    )
+    created = []
+    calls = {"n": 0}
+
+    def factory(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PermissionError(13, "Permission denied")
+        sock = _FakeSocket(set())
+        created.append(sock)
+        return sock
+
+    monkeypatch.setattr(discovery.socket, "socket", factory)
+
+    _broadcaster()._send_tether_broadcasts(b"PACKET")
+
+    assert len(created) == 1
+    assert created[0].bound == ("192.168.42.1", 0)
+    assert created[0].sent == [
+        (b"PACKET", (discovery.TETHER_BROADCAST_ADDRESS, discovery.BROADCAST_PORT))
+    ]
+
+
+def test_broadcast_loop_survives_an_unexpected_error_in_a_cycle(monkeypatch):
+    """Defence in depth behind the two helpers: whatever a cycle raises, the
+    loop keeps running. Without this a single bad cycle silently ends
+    discovery for the rest of the session."""
+    b = _broadcaster()
+    cycles = {"n": 0}
+
+    def exploding_packet():
+        cycles["n"] += 1
+        if cycles["n"] == 1:
+            raise RuntimeError("boom")
+        b._running = False      # second cycle proves the loop came back
+        return b"PACKET"
+
+    monkeypatch.setattr(b, "_make_packet", exploding_packet)
+    monkeypatch.setattr(b, "_send_tether_broadcasts", lambda packet: None)
+    monkeypatch.setattr(b, "_send_loopback_broadcast", lambda packet: None)
+    monkeypatch.setattr(discovery.time, "sleep", lambda s: None)
+
+    b._running = True
+    b._broadcast_loop()
+
+    assert cycles["n"] == 2

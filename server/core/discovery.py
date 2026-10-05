@@ -87,8 +87,13 @@ class DiscoveryBroadcaster:
         kill the loop.
         """
         for source_addr in usb_tether_source_addresses():
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # socket() is inside the try, not before it: creation itself can
+            # fail (EPERM under snap confinement, EMFILE on fd exhaustion),
+            # and an escape from here takes the whole broadcast thread with
+            # it — see _send_loopback_broadcast for the field report.
+            sock = None
             try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind((source_addr, 0))
@@ -97,28 +102,48 @@ class DiscoveryBroadcaster:
                 log.debug("Tether broadcast from %s failed — skipping "
                           "this cycle: %s", source_addr, e)
             finally:
-                sock.close()
+                if sock is not None:
+                    sock.close()
 
     def _send_loopback_broadcast(self, packet: bytes) -> None:
-        """Unchanged from before this fix: local diagnostic tooling on this
-        same machine keeps discovering the server."""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        """Local diagnostic tooling on this same machine keeps discovering
+        the server.
+
+        socket() is inside the try because creating the socket is itself a
+        syscall that can be refused. Observed in the snap as
+        `PermissionError: [Errno 13] Permission denied` raised by socket()
+        on this line: it escaped this helper, escaped _broadcast_loop, and
+        killed the broadcaster thread, so the server stopped announcing
+        itself for the rest of the session and the Android app could no
+        longer find it. A refused cycle must cost one announcement, never
+        the loop.
+        """
+        sock = None
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.sendto(packet, (LOOPBACK_BROADCAST_ADDRESS, BROADCAST_PORT))
         except OSError as e:
             log.debug("Loopback broadcast failed: %s", e)
         finally:
-            sock.close()
+            if sock is not None:
+                sock.close()
 
     def _broadcast_loop(self):
         log.info("Broadcasting presence on UDP port %d every %.0fs",
                  BROADCAST_PORT, BROADCAST_INTERVAL)
 
         while self._running:
-            packet = self._make_packet()
-            self._send_tether_broadcasts(packet)
-            self._send_loopback_broadcast(packet)
+            # Defence in depth behind the two helpers, which already swallow
+            # their own OSErrors. This catch is for everything they cannot
+            # anticipate: the thread announcing the server must outlive any
+            # single bad cycle, because nothing restarts it if it dies.
+            try:
+                packet = self._make_packet()
+                self._send_tether_broadcasts(packet)
+                self._send_loopback_broadcast(packet)
+            except Exception as e:
+                log.debug("Discovery cycle failed — retrying next tick: %s", e)
             time.sleep(BROADCAST_INTERVAL)
 
     def start(self):
