@@ -2,6 +2,20 @@
 # Use $SNAP prefix when running inside a snap, fall back to /usr for .deb installs
 _LIB="${SNAP:+$SNAP}/usr/lib/tethrlink"
 export PYTHONPATH="${_LIB}:${PYTHONPATH}"
+
+# Inside a snap, snapd redirects XDG_RUNTIME_DIR into the snap's own
+# namespace (/run/user/<uid>/snap.tethrlink), so pipewiresrc looks for the
+# socket there and never finds it. Point it back at the real runtime dir.
+#
+# Derived from `id -u`, not hardcoded: this used to be set to /run/user/1000
+# in snapcraft.yaml, which is simply wrong for anyone whose uid is not 1000 —
+# a second user account on the same machine, or any distro that does not
+# start numbering at 1000. Only set when unset, so a debugging override on
+# the command line still wins. Harmless outside a snap, where
+# XDG_RUNTIME_DIR is already correct and this variable goes unread.
+if [ -n "${SNAP}" ] && [ -z "${PIPEWIRE_RUNTIME_DIR}" ]; then
+    export PIPEWIRE_RUNTIME_DIR="/run/user/$(id -u)"
+fi
 # Run from the library dir. `python3 -m` puts the current working directory
 # first on sys.path, so launching from any directory that happens to contain a
 # `server/` package imports that instead of ours — which silently ran a user's

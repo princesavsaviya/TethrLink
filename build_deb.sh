@@ -61,8 +61,16 @@ chmod 755 "${BUILD_DIR}/DEBIAN/postinst"
 chmod 755 "${BUILD_DIR}/DEBIAN/postrm"
 chmod 755 "${BUILD_DIR}/usr/bin/tethrlink"
 
-# Build the package
-dpkg-deb --build "${BUILD_DIR}" "${DEB_FILE}"
+# Build the package.
+#
+# --root-owner-group is not optional: dpkg-deb records the ownership of the
+# files it finds on disk, and dpkg restores that ownership on install. Built
+# from a developer's checkout without this flag, every path in the package is
+# owned by that developer's uid — so a released .deb installs /usr/bin/
+# tethrlink and all of /usr/lib/tethrlink owned by uid 1000 on the user's
+# machine, writable by whoever happens to hold that uid. With the flag they
+# are root:root, as system files must be.
+dpkg-deb --root-owner-group --build "${BUILD_DIR}" "${DEB_FILE}"
 
 echo "✅ Package built successfully: ${DEB_FILE}"
 echo "📦 Contents preview:"
