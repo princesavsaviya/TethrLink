@@ -9,6 +9,24 @@
 
   gtag('config', 'G-TL711R7MC6');
 </script>
+<script>
+(function(){
+  function track(e){
+    var a = e.target.closest && e.target.closest('a[data-download]');
+    if(!a || typeof gtag !== 'function') return;
+    var name = a.pathname.split('/').pop();
+    try { name = decodeURIComponent(name); } catch(_){}
+    gtag('event', 'download_click', {
+      platform: a.dataset.platform || 'unknown',
+      file_name: name,
+      link_url: a.href,
+      transport_type: 'beacon'
+    });
+  }
+  document.addEventListener('click', track);
+  document.addEventListener('auxclick', function(e){ if(e.button === 1) track(e); });
+})();
+</script>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>TethrLink — a real second display for Linux, over USB</title>
@@ -1000,14 +1018,14 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
       <h3>Snap</h3>
       <p>Installs and updates itself. The quickest way onto Ubuntu and anything else with snapd.</p>
       <div class="cmd">sudo snap install tethrlink</div>
-      <a href="https://snapcraft.io/tethrlink" target="_blank" rel="noopener" class="dl-btn ghost">View on Snapcraft</a>
+      <a href="https://snapcraft.io/tethrlink" target="_blank" rel="noopener" class="dl-btn ghost" data-download data-platform="linux-snap">View on Snapcraft</a>
     </div>
 
     <div class="dl-card">
       <div class="dl-kind">Linux · Debian/Ubuntu</div>
       <h3>.deb package</h3>
       <p>A normal apt package with dependencies declared. Remove it with <span class="mono">apt remove tethrlink</span>.</p>
-      <a href="https://github.com/princesavsaviya/TethrLink/releases/latest/download/tethrlink_all.deb" class="dl-btn solid">
+      <a href="https://github.com/princesavsaviya/TethrLink/releases/latest/download/tethrlink_all.deb" class="dl-btn solid" data-download data-platform="linux-deb">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         Download .deb
       </a>
@@ -1017,7 +1035,7 @@ footer{position:relative;z-index:3;border-top:1px solid var(--line);margin-top:4
       <div class="dl-kind">Android · the other half</div>
       <h3>Android app</h3>
       <p>Android 5.0 or newer, with USB tethering. Finds the server by itself.</p>
-      <a href="https://github.com/princesavsaviya/TethrLink/releases/latest/download/tethrlink.apk" class="dl-btn solid">
+      <a href="https://github.com/princesavsaviya/TethrLink/releases/latest/download/tethrlink.apk" class="dl-btn solid" data-download data-platform="android">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         Download .apk
       </a>
