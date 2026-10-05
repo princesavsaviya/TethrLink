@@ -1,7 +1,7 @@
 name: tethrlink
 title: TethrLink
 base: core24
-version: '2.0.1'
+version: '2.0.2'
 summary: Turn your Android tablet into a wired second monitor for Linux.
 description: |
   TethrLink turns an Android tablet into a real second monitor for your Linux
@@ -44,7 +44,44 @@ platforms:
   amd64:
 
 grade: stable
-confinement: strict
+
+# devmode, deliberately, and it cannot be strict.
+#
+# The virtual display is created by calling
+# org.gnome.Mutter.ScreenCast.CreateSession + RecordVirtual on the session
+# bus. That is Mutter's private API. There is no portal equivalent — the
+# portal spec has no virtual-monitor mechanism at all, by design — and no
+# snapd interface grants it: `screencast-legacy`, the only candidate, covers
+# /org/gnome/Shell/Screen{cast,shot} and nothing under /org/gnome/Mutter.
+# A `dbus` plug does not help either: a dbus plug can only connect to a dbus
+# *slot* provided by another snap, and gnome-shell is the host's own package
+# (AppArmor label `unconfined`), so such a plug is never connected.
+#
+# Under strict confinement the result is not degraded video — it is no
+# session at all. Every connection dies at handshake with:
+#
+#   Virtual display failed: org.freedesktop.DBus.Error.AccessDenied:
+#   An AppArmor policy prevents this sender from sending this message to this
+#   recipient; interface="org.gnome.Mutter.ScreenCast" member="CreateSession"
+#   label="snap.tethrlink.tethrlink (enforce)"
+#
+# and the Android app drops straight back to scanning for a server. Both
+# previously published builds (stable 1.0.0 rev 1, beta 2.0.1 rev 4) shipped
+# strict, after be7ef85 flipped it as a drive-by in a rename commit, so no
+# store build has ever been able to extend a display.
+#
+# devmode loads the same AppArmor profile in complain mode, so the Mutter
+# calls go through. The cost is store policy, not technical: a devmode snap
+# can only be released to beta/edge, is excluded from store search, and does
+# not auto-refresh. Classic would lift that, but `extensions: [gnome]`
+# refuses to build classic ("Extension 'gnome' does not support confinement
+# 'classic'") and the extension is where python3.12, GTK4/libadwaita and all
+# 107 GStreamer plugins come from — so classic means hand-staging that whole
+# stack *and* passing Canonical's manual classic review.
+#
+# The plugs below still matter: devmode connects interfaces exactly as strict
+# does, it just does not enforce the profile.
+confinement: devmode
 
 slots:
   tethrlink-dbus:
@@ -78,7 +115,11 @@ apps:
       - tethrlink-dbus
     environment:
       PYTHONPATH: $SNAP/usr/lib/tethrlink
-      PIPEWIRE_RUNTIME_DIR: /run/user/1000
+      # PIPEWIRE_RUNTIME_DIR is deliberately not set here. snapd's env
+      # expansion has no way to spell the current uid, so this used to be
+      # hardcoded to /run/user/1000 and broke for every other uid. The
+      # launcher derives it from `id -u` instead — see
+      # debian_build/usr/bin/tethrlink.
       # Staged plugins land here; the gnome extension only points GStreamer at
       # the platform snap, so without this the new plugins are invisible.
       GST_PLUGIN_PATH: $SNAP/usr/lib/x86_64-linux-gnu/gstreamer-1.0
