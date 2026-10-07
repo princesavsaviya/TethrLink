@@ -103,6 +103,82 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:layout_marginBottom="10dp">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:text="Scale"
+                    android:textColor="@color/text_hint"
+                    android:textSize="10sp"
+                    android:letterSpacing="0.10"/>
+                <Button
+                    android:id="@+id/btnScale100"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_codec_selected"
+                    android:stateListAnimator="@null"
+                    android:paddingHorizontal="0dp"
+                    android:minWidth="0dp"
+                    android:text="100%"
+                    android:textColor="@color/brand_light"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:layout_marginEnd="4dp"/>
+                <Button
+                    android:id="@+id/btnScale150"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_codec_unselected"
+                    android:stateListAnimator="@null"
+                    android:paddingHorizontal="0dp"
+                    android:minWidth="0dp"
+                    android:text="150%"
+                    android:textColor="@color/text_hint"
+                    android:textSize="11sp"
+                    android:layout_marginEnd="4dp"/>
+                <Button
+                    android:id="@+id/btnScale200"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_codec_unselected"
+                    android:stateListAnimator="@null"
+                    android:paddingHorizontal="0dp"
+                    android:minWidth="0dp"
+                    android:text="200%"
+                    android:textColor="@color/text_hint"
+                    android:textSize="11sp"
+                    android:layout_marginEnd="4dp"/>
+                <Button
+                    android:id="@+id/btnScale300"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_codec_unselected"
+                    android:stateListAnimator="@null"
+                    android:paddingHorizontal="0dp"
+                    android:minWidth="0dp"
+                    android:text="300%"
+                    android:textColor="@color/text_hint"
+                    android:textSize="11sp"/>
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="10dp"
+                android:text="Reduces bandwidth on H.264 only"
+                android:textColor="@color/text_hint"
+                android:textSize="9sp"/>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
                 android:orientation="horizontal">
                 <LinearLayout
                     android:layout_width="0dp"

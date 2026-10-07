@@ -127,6 +127,10 @@ class MainActivityV2 : AppCompatActivity() {
     private lateinit var overlayResolution: TextView
     private lateinit var overlayCodec:      TextView
     private lateinit var disconnectBtn:     Button
+    private lateinit var btnScale100:       Button
+    private lateinit var btnScale150:       Button
+    private lateinit var btnScale200:       Button
+    private lateinit var btnScale300:       Button
 
     // ── Discovered server ─────────────────────────────────────────────────────
     private var discoveredIp:       String? = null
@@ -264,6 +268,10 @@ class MainActivityV2 : AppCompatActivity() {
         overlayResolution = findViewById(R.id.overlayResolution)
         overlayCodec      = findViewById(R.id.overlayCodec)
         disconnectBtn     = findViewById(R.id.disconnectBtn)
+        btnScale100       = findViewById(R.id.btnScale100)
+        btnScale150       = findViewById(R.id.btnScale150)
+        btnScale200       = findViewById(R.id.btnScale200)
+        btnScale300       = findViewById(R.id.btnScale300)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableImmersiveMode()
@@ -278,6 +286,23 @@ class MainActivityV2 : AppCompatActivity() {
             streamJob?.cancel()
             startStateLoop()
         }
+
+        // Scale pills — persisted in the shared settings file so the choice
+        // survives process death, and read again in startStreaming() so the
+        // next hello reflects it. Tapping a different pill during a live
+        // session tears the socket down and lets the existing finally-block
+        // reconnect path re-issue the handshake at the new size; resolution
+        // is negotiated once at handshake time and cannot be renegotiated
+        // mid-stream. On JPEG the server ignores the size (see the long
+        // comment in server_core.py — every JPEG frame is standalone, so
+        // dropping resolution there is far more expensive per byte than on
+        // H.264), so the pills are a no-op there; the overlay hint documents
+        // that instead of disabling the control.
+        highlightScalePill(currentScalePercent())
+        btnScale100.setOnClickListener { onScaleSelected(100) }
+        btnScale150.setOnClickListener { onScaleSelected(150) }
+        btnScale200.setOnClickListener { onScaleSelected(200) }
+        btnScale300.setOnClickListener { onScaleSelected(300) }
 
         onBackPressedDispatcher.addCallback(this, overlayBackCallback)
 
@@ -705,8 +730,19 @@ class MainActivityV2 : AppCompatActivity() {
                 val input = DataInputStream(socket.getInputStream())
 
                 val deviceName = android.os.Build.MODEL.toByteArray()
-                val screenW    = windowManager.currentWindowMetrics.bounds.width()
-                val screenH    = windowManager.currentWindowMetrics.bounds.height()
+                val rawW       = windowManager.currentWindowMetrics.bounds.width()
+                val rawH       = windowManager.currentWindowMetrics.bounds.height()
+                // Downscale factor: 100 = native, 200 = half each axis (¼ bytes).
+                // `and 1.inv()` forces even, which H.264 encoders on the server
+                // require. The 320/240 floor stays comfortably above
+                // MIN_PLAUSIBLE_DIMENSION (64) in server/core/geometry.py — if
+                // we ever sent something smaller the server would decide the
+                // dims were implausible and silently fall back to its own
+                // monitor size, and the scale option would appear to do
+                // nothing.
+                val scalePct   = currentScalePercent()
+                val screenW    = ((rawW * 100 / scalePct) and 1.inv()).coerceAtLeast(320)
+                val screenH    = ((rawH * 100 / scalePct) and 1.inv()).coerceAtLeast(240)
                 val screenDims = java.nio.ByteBuffer.allocate(8)
                     .putInt(screenW).putInt(screenH).array()
 
@@ -1105,6 +1141,51 @@ class MainActivityV2 : AppCompatActivity() {
                     }
                 )
             }
+        }
+    }
+
+    // ── Scale pills ───────────────────────────────────────────────────────────
+
+    private fun currentScalePercent(): Int =
+        getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE)
+            .getInt(SettingsActivity.KEY_SCALE, SettingsActivity.DEFAULT_SCALE)
+            .coerceIn(100, 400)
+
+    private fun onScaleSelected(percent: Int) {
+        val current = currentScalePercent()
+        if (percent == current) return
+        getSharedPreferences(SettingsActivity.PREFS_NAME, MODE_PRIVATE)
+            .edit()
+            .putInt(SettingsActivity.KEY_SCALE, percent)
+            .apply()
+        highlightScalePill(percent)
+        // Resolution is negotiated once per session, so applying a new factor
+        // means starting a new session. Cancelling streamJob drops us into
+        // the finally-block at the end of startStreaming, which either
+        // reconnects via startDiscoveryListener(autoConnectIp = …) or falls
+        // back through the state loop if USB tether has gone.
+        if (streamJob?.isActive == true) streamJob?.cancel()
+    }
+
+    private fun highlightScalePill(percent: Int) {
+        val pills = listOf(
+            100 to btnScale100,
+            150 to btnScale150,
+            200 to btnScale200,
+            300 to btnScale300,
+        )
+        for ((value, button) in pills) {
+            val selected = value == percent
+            button.setBackgroundResource(
+                if (selected) R.drawable.bg_codec_selected
+                else R.drawable.bg_codec_unselected
+            )
+            button.setTextColor(
+                ContextCompat.getColor(
+                    this,
+                    if (selected) R.color.brand_light else R.color.text_hint
+                )
+            )
         }
     }
 

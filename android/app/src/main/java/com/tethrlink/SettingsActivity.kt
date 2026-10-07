@@ -26,9 +26,11 @@ class SettingsActivity : AppCompatActivity() {
         const val KEY_FPS         = "pref_fps"
         const val KEY_QUALITY     = "pref_quality"
         const val KEY_CODEC       = "pref_codec"
+        const val KEY_SCALE       = "pref_scale_percent"
         const val DEFAULT_FPS     = 60
         const val DEFAULT_QUALITY = 85
         const val DEFAULT_CODEC   = "jpeg"
+        const val DEFAULT_SCALE   = 100
         const val APP_VERSION     = "v0.9.4"
         const val GITHUB_URL      = "https://github.com/princesavsaviya/TethrLink"
     }
